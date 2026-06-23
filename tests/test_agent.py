@@ -2,6 +2,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from urllib.error import URLError
 
 import agent
 
@@ -46,6 +48,41 @@ class AgentToolsTestCase(unittest.TestCase):
             parser.results,
             [{"title": "Example result", "url": "https://example.com"}],
         )
+
+    @patch("agent.http_get")
+    def test_web_search_uses_searxng_json_api(self, http_get):
+        http_get.return_value = (
+            "application/json",
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "title": "Ollama docs",
+                            "url": "https://example.com/ollama",
+                            "content": "Tool calling documentation",
+                        }
+                    ]
+                }
+            ),
+        )
+
+        results = json.loads(agent.web_search("ollama tools", 3))
+
+        self.assertEqual(results[0]["title"], "Ollama docs")
+        self.assertIn("/search?q=ollama+tools&format=json", http_get.call_args.args[0])
+
+    @patch("agent.duckduckgo_search")
+    @patch("agent.searxng_search", side_effect=URLError("offline"))
+    def test_web_search_falls_back_when_searxng_is_offline(
+        self, searxng_search, duckduckgo_search
+    ):
+        duckduckgo_search.return_value = [
+            {"title": "Fallback", "url": "https://example.com"}
+        ]
+
+        results = json.loads(agent.web_search("fallback", 2))
+
+        self.assertEqual(results[0]["title"], "Fallback")
 
     def test_agent_loop_executes_tool_and_returns_final_answer(self):
         instructions = Path(self.workspace) / "instructions.md"

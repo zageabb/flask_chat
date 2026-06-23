@@ -13,6 +13,9 @@ from urllib.request import Request, urlopen
 
 MAX_FILE_BYTES = 200_000
 MAX_TOOL_OUTPUT = 12_000
+SEARXNG_URL = os.environ.get(
+    "SEARXNG_URL", "http://192.168.1.249:8081"
+).rstrip("/")
 BLOCKED_COMMANDS = {
     "chmod",
     "chown",
@@ -180,12 +183,52 @@ def http_get(url, timeout=15):
     return content_type, body
 
 
-def web_search(query, max_results=5):
-    max_results = max(1, min(int(max_results), 10))
+def searxng_search(query, max_results):
+    _, body = http_get(
+        f"{SEARXNG_URL}/search?q={quote_plus(query)}&format=json"
+    )
+    payload = json.loads(body)
+    results = []
+    for result in payload.get("results", [])[:max_results]:
+        results.append(
+            {
+                "title": result.get("title", ""),
+                "url": result.get("url", ""),
+                "snippet": result.get("content", ""),
+            }
+        )
+    return results
+
+
+def duckduckgo_search(query, max_results):
     _, body = http_get(f"https://html.duckduckgo.com/html/?q={quote_plus(query)}")
     parser = SearchResultParser()
     parser.feed(body)
-    results = parser.results[:max_results]
+    return parser.results[:max_results]
+
+
+def web_search(query, max_results=5):
+    max_results = max(1, min(int(max_results), 10))
+    results = []
+    searxng_error = None
+
+    if SEARXNG_URL:
+        try:
+            results = searxng_search(query, max_results)
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as error:
+            searxng_error = str(error)
+
+    if not results:
+        try:
+            results = duckduckgo_search(query, max_results)
+        except (HTTPError, URLError, TimeoutError) as error:
+            if searxng_error:
+                return (
+                    f"SearXNG search failed: {searxng_error}\n"
+                    f"Fallback search failed: {error}"
+                )
+            return f"Search failed: {error}"
+
     if not results:
         return "No search results found."
     return json.dumps(results, indent=2)

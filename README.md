@@ -60,6 +60,8 @@ container or VM with no secrets and only the intended workspace mounted.
 - `AGENT_WORKSPACE`: directory available to file and command tools.
 - `BASE_INSTRUCTIONS_FILE`: path to the main agent instruction file.
 - `SKILLS_DIR`: directory containing Markdown skill playbooks.
+- `SEARXNG_URL`: SearXNG base URL used by the web-search tool. Defaults to
+  `http://192.168.1.249:8081`; set it to an empty value to use the public fallback.
 
 When Flask runs in Docker and Ollama runs on the host, set `OLLAMA_URL` to
 `http://host.docker.internal:11434`. The image stores SQLite data in
@@ -68,3 +70,6 @@ replacement.
 
 The agent loop follows Ollama's native tool-calling API:
 <https://docs.ollama.com/capabilities/tool-calling>.
+
+SearXNG must allow JSON responses from `/search?format=json`. If Flask runs in
+Docker, the container must be able to route to the configured LAN address.
