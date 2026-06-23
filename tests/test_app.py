@@ -102,8 +102,8 @@ class ChatAppTestCase(unittest.TestCase):
         self.assertEqual(payload["tool"], "web_search")
         self.assertEqual(payload["arguments"]["query"], "ollama")
 
-    @patch("app.call_ollama", return_value="Hello Alice")
-    def test_ollama_reply_is_added_as_third_participant(self, call_ollama):
+    @patch("app.call_agent", return_value=("Hello Alice", []))
+    def test_ollama_reply_uses_orchestrator(self, call_agent):
         response = self.client.post(
             "/",
             data={
@@ -117,9 +117,10 @@ class ChatAppTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         messages = chat_app.get_messages()
-        self.assertEqual([message["user"] for message in messages], ["Alice", "Ollama"])
+        self.assertEqual([message["user"] for message in messages], ["Alice", "Ollama Agent"])
         self.assertEqual(messages[1]["role"], "assistant")
-        call_ollama.assert_called_once_with("test-model")
+        self.assertIsNone(messages[1]["trace"])
+        call_agent.assert_called_once_with("test-model")
 
     @patch(
         "app.call_agent",
@@ -128,14 +129,13 @@ class ChatAppTestCase(unittest.TestCase):
             [{"step": 1, "tool": "write_file", "result": "Wrote app.py"}],
         ),
     )
-    def test_agent_mode_records_reply_and_tool_trace(self, call_agent):
+    def test_orchestrator_records_reply_and_tool_trace(self, call_agent):
         response = self.client.post(
             "/",
             data={
                 "username": "Alice",
                 "message": "Write a program",
                 "ask_ollama": "on",
-                "agent_mode": "on",
                 "ollama_model": "tool-model",
             },
             follow_redirects=True,
@@ -161,14 +161,13 @@ class ChatAppTestCase(unittest.TestCase):
             ],
         ),
     )
-    def test_fetch_post_returns_json_for_agent_mode(self, call_agent):
+    def test_fetch_post_returns_json_for_orchestrator(self, call_agent):
         response = self.client.post(
             "/",
             data={
                 "username": "Alice",
                 "message": "Search for Ollama",
                 "ask_ollama": "on",
-                "agent_mode": "on",
                 "ollama_model": "tool-model",
             },
             headers={"X-Requested-With": "fetch"},

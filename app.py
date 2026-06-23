@@ -291,24 +291,6 @@ def ollama_chat(model, messages, tools=None):
     return message
 
 
-def call_ollama(model):
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are Ollama, a friendly third participant in a group chat. "
-                "Respond naturally to the conversation. Human messages are prefixed "
-                "with their display name."
-            ),
-        },
-        *build_ollama_history(),
-    ]
-    content = (ollama_chat(model, messages).get("content") or "").strip()
-    if not content:
-        raise RuntimeError("Ollama returned an empty response.")
-    return content
-
-
 def call_agent(model):
     set_agent_status(
         active=True,
@@ -375,7 +357,6 @@ def index():
         text = request.form.get("message", "").strip()
         file = request.files.get("file")
         ask_ollama = request.form.get("ask_ollama") == "on"
-        agent_mode = request.form.get("agent_mode") == "on"
         ollama_model = request.form.get("ollama_model", OLLAMA_MODEL).strip() or OLLAMA_MODEL
         session["ollama_model"] = ollama_model
 
@@ -394,17 +375,13 @@ def index():
 
             if ask_ollama:
                 try:
-                    if agent_mode:
-                        reply, trace = call_agent(ollama_model)
-                        add_message(
-                            "Ollama Agent",
-                            reply,
-                            role="assistant",
-                            trace=trace,
-                        )
-                    else:
-                        reply = call_ollama(ollama_model)
-                        add_message("Ollama", reply, role="assistant")
+                    reply, trace = call_agent(ollama_model)
+                    add_message(
+                        "Ollama Agent",
+                        reply,
+                        role="assistant",
+                        trace=trace,
+                    )
                 except RuntimeError as error:
                     ollama_error = str(error)
 

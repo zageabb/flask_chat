@@ -21,16 +21,18 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Open <http://localhost:5000>. Select **Ask Ollama to join in** when you want the
-model to reply to a message. Also select **Autonomous agent mode** to allow it to
-choose and execute tools. Messages and tool traces are stored in `chat.db`.
+Open <http://localhost:5000>. Select **Ask Ollama / agent to join in** when you
+want the model to reply. The orchestrator decides whether to answer directly or
+use tools such as web search, URL fetching, file access, and guarded commands.
+Messages and tool traces are stored in `chat.db`.
 Open clients poll for new messages every two seconds, so conversations stay in
 sync without refreshing the whole page.
 The toolbar shows the currently loaded Markdown skills and can clear the shared
 chat history. Clearing chat does not delete uploads or files in `agent_workspace/`.
 
 Use a model that supports tool calling, such as a current Qwen model. Models that
-do not support Ollama tool calls can still use ordinary chat mode.
+do not support Ollama tool calls may still answer directly, but will not be able
+to use the agent tools reliably.
 
 ## Agent skills and tools
 

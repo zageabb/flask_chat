@@ -297,11 +297,7 @@
         <div class="ollama-options">
             <label>
                 <input type="checkbox" name="ask_ollama">
-                Ask Ollama to join in
-            </label>
-            <label title="Allows Ollama to search the web, write code, inspect files, and run guarded commands">
-                <input type="checkbox" name="agent_mode">
-                Autonomous agent mode
+                Ask Ollama / agent to join in
             </label>
             <input
                 type="text"
@@ -506,7 +502,7 @@
         syncStatus.classList.remove("offline");
 
         const formData = new FormData(chatForm);
-        const usingAgent = formData.get("ask_ollama") === "on" && formData.get("agent_mode") === "on";
+        const usingAgent = formData.get("ask_ollama") === "on";
         if (usingAgent) {
             agentStatus.className = "agent-status";
             agentStatus.textContent = "Agent request sent. Waiting for first status…";
