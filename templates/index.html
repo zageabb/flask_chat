@@ -20,6 +20,50 @@
             text-align: center;
         }
 
+        .sync-status {
+            color: #667;
+            font-size: 12px;
+            margin: -8px 0 8px;
+            text-align: center;
+        }
+
+        .sync-status.offline {
+            color: #b71c1c;
+        }
+
+        .chat-toolbar {
+            align-items: center;
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+            margin-bottom: 8px;
+        }
+
+        .secondary-button,
+        .danger-button {
+            padding: 7px 10px;
+        }
+
+        .secondary-button {
+            background: #546e7a;
+        }
+
+        .danger-button {
+            background: #c62828;
+        }
+
+        .skills-panel {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            padding: 10px 14px;
+        }
+
+        .skills-panel ul {
+            margin-bottom: 0;
+        }
+
         .chat-box {
             background: white;
             height: 450px;
@@ -141,14 +185,36 @@
 
 <div class="container">
     <h2>Chat</h2>
+    <p class="sync-status" aria-live="polite">Live updates on</p>
 
     {% if ollama_error %}
         <p class="error">{{ ollama_error }}</p>
     {% endif %}
 
+    <div class="chat-toolbar">
+        <button type="button" class="secondary-button" id="toggle-skills">Available skills</button>
+        <button type="button" class="danger-button" id="clear-chat">Clear chat</button>
+    </div>
+
+    <section class="skills-panel" id="skills-panel" hidden>
+        <strong>Agent skills</strong>
+        {% if skills %}
+            <ul>
+                {% for skill in skills %}
+                    <li><b>{{ skill.name }}</b> — {{ skill.description }}</li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p>No Markdown skills were found.</p>
+        {% endif %}
+    </section>
+
     <div class="chat-box">
         {% for msg in messages %}
-            <div class="message {% if msg.role == 'assistant' %}ollama{% endif %}">
+            <div
+                class="message {% if msg.role == 'assistant' %}ollama{% endif %}"
+                data-message-id="{{ msg.id }}"
+            >
                 <span class="timestamp">{{ msg.created_at }}</span>
                 <b>{{ msg.user }}</b><br>
                 {{ msg.text }}
@@ -209,7 +275,153 @@
 
 <script>
     const chatBox = document.querySelector(".chat-box");
+    const syncStatus = document.querySelector(".sync-status");
+    const skillsPanel = document.querySelector("#skills-panel");
+    const toggleSkillsButton = document.querySelector("#toggle-skills");
+    const clearChatButton = document.querySelector("#clear-chat");
+    const pollIntervalMs = 2000;
+    let pollInProgress = false;
+    let clearVersion = {{ clear_version | tojson }};
+    let lastMessageId = Math.max(
+        0,
+        ...Array.from(chatBox.querySelectorAll("[data-message-id]"), element =>
+            Number(element.dataset.messageId)
+        )
+    );
+
+    function isNearBottom() {
+        return chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight < 80;
+    }
+
+    function fileIcon(filename) {
+        const lowerName = filename.toLowerCase();
+        if (lowerName.endsWith(".pdf")) return "📄";
+        if (lowerName.endsWith(".xlsx")) return "📊";
+        if (lowerName.endsWith(".docx")) return "📝";
+        if (lowerName.endsWith(".jpg") || lowerName.endsWith(".png")) return "🖼️";
+        return "📁";
+    }
+
+    function appendMessage(message) {
+        if (chatBox.querySelector(`[data-message-id="${message.id}"]`)) return;
+
+        const shouldScroll = isNearBottom();
+        const messageElement = document.createElement("div");
+        messageElement.className = `message ${message.role === "assistant" ? "ollama" : ""}`;
+        messageElement.dataset.messageId = message.id;
+
+        const timestamp = document.createElement("span");
+        timestamp.className = "timestamp";
+        timestamp.textContent = message.created_at;
+        messageElement.appendChild(timestamp);
+
+        const username = document.createElement("b");
+        username.textContent = message.user;
+        messageElement.appendChild(username);
+        messageElement.appendChild(document.createElement("br"));
+        messageElement.appendChild(document.createTextNode(message.text || ""));
+
+        if (message.trace) {
+            const details = document.createElement("details");
+            details.className = "tool-trace";
+            const summary = document.createElement("summary");
+            summary.textContent = "Agent tool activity";
+            const trace = document.createElement("pre");
+            trace.textContent = message.trace;
+            details.append(summary, trace);
+            messageElement.appendChild(details);
+        }
+
+        if (message.file && message.upload_url) {
+            const fileBox = document.createElement("div");
+            fileBox.className = "file-box";
+            const icon = document.createElement("span");
+            icon.className = "file-icon";
+            icon.textContent = fileIcon(message.filename || "");
+            const link = document.createElement("a");
+            link.href = message.upload_url;
+            link.target = "_blank";
+            link.rel = "noopener";
+            link.textContent = message.filename || "Attachment";
+            fileBox.append(icon, link);
+            messageElement.appendChild(fileBox);
+        }
+
+        chatBox.appendChild(messageElement);
+        lastMessageId = Math.max(lastMessageId, Number(message.id));
+        if (shouldScroll) chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    async function syncMessages() {
+        if (pollInProgress || document.hidden) return;
+        pollInProgress = true;
+
+        try {
+            const response = await fetch(`/api/messages?after_id=${lastMessageId}`, {
+                cache: "no-store",
+                headers: { "Accept": "application/json" }
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const payload = await response.json();
+            if (payload.clear_version !== clearVersion) {
+                chatBox.replaceChildren();
+                lastMessageId = 0;
+                clearVersion = payload.clear_version;
+                const refreshedResponse = await fetch("/api/messages?after_id=0", {
+                    cache: "no-store",
+                    headers: { "Accept": "application/json" }
+                });
+                if (!refreshedResponse.ok) throw new Error(`HTTP ${refreshedResponse.status}`);
+                const refreshedPayload = await refreshedResponse.json();
+                refreshedPayload.messages.forEach(appendMessage);
+                clearVersion = refreshedPayload.clear_version;
+            } else {
+                payload.messages.forEach(appendMessage);
+            }
+            syncStatus.textContent = "Live updates on";
+            syncStatus.classList.remove("offline");
+        } catch (error) {
+            syncStatus.textContent = "Reconnecting…";
+            syncStatus.classList.add("offline");
+        } finally {
+            pollInProgress = false;
+        }
+    }
+
+    async function clearChat() {
+        if (!window.confirm("Clear all chat messages for everyone?")) return;
+        clearChatButton.disabled = true;
+
+        try {
+            const response = await fetch("/api/messages/clear", {
+                method: "POST",
+                headers: { "Accept": "application/json" }
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const payload = await response.json();
+            chatBox.replaceChildren();
+            lastMessageId = 0;
+            clearVersion = payload.clear_version;
+            syncStatus.textContent = "Chat cleared";
+            syncStatus.classList.remove("offline");
+        } catch (error) {
+            syncStatus.textContent = "Could not clear chat";
+            syncStatus.classList.add("offline");
+        } finally {
+            clearChatButton.disabled = false;
+        }
+    }
+
+    toggleSkillsButton.addEventListener("click", () => {
+        skillsPanel.hidden = !skillsPanel.hidden;
+        toggleSkillsButton.textContent = skillsPanel.hidden ? "Available skills" : "Hide skills";
+    });
+    clearChatButton.addEventListener("click", clearChat);
     chatBox.scrollTop = chatBox.scrollHeight;
+    window.setInterval(syncMessages, pollIntervalMs);
+    document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) syncMessages();
+    });
 </script>
 
 </html>

@@ -2,10 +2,20 @@ import json
 import os
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from flask import Flask, redirect, render_template, request, send_from_directory, session, url_for
+from flask import (
+    Flask,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_from_directory,
+    session,
+    url_for,
+)
 
 from agent import run_agent
 
@@ -64,6 +74,17 @@ def init_db():
         }
         if "trace" not in columns:
             connection.execute("ALTER TABLE messages ADD COLUMN trace TEXT")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                clear_version INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO chat_state (id, clear_version) VALUES (1, 0)"
+        )
         connection.commit()
     finally:
         connection.close()
@@ -115,6 +136,77 @@ def get_messages(limit=None):
         return [dict(row) for row in connection.execute(query, parameters).fetchall()]
     finally:
         connection.close()
+
+
+def get_messages_after(message_id):
+    connection = get_db()
+    try:
+        return [
+            dict(row)
+            for row in connection.execute(
+                "SELECT * FROM messages WHERE id > ? ORDER BY id",
+                (message_id,),
+            ).fetchall()
+        ]
+    finally:
+        connection.close()
+
+
+def get_chat_state():
+    connection = get_db()
+    try:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS message_count, COALESCE(MAX(id), 0) AS latest_id
+            FROM messages
+            """
+        ).fetchone()
+        state = dict(row)
+        state["clear_version"] = connection.execute(
+            "SELECT clear_version FROM chat_state WHERE id = 1"
+        ).fetchone()["clear_version"]
+        return state
+    finally:
+        connection.close()
+
+
+def clear_messages():
+    connection = get_db()
+    try:
+        connection.execute("DELETE FROM messages")
+        connection.execute(
+            "UPDATE chat_state SET clear_version = clear_version + 1 WHERE id = 1"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def get_available_skills():
+    skills = []
+    skills_path = Path(SKILLS_DIR)
+    if not skills_path.is_dir():
+        return skills
+
+    for skill_file in sorted(skills_path.glob("*.md")):
+        content = skill_file.read_text(encoding="utf-8")
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        heading = next(
+            (line.lstrip("#").strip() for line in lines if line.startswith("#")),
+            skill_file.stem.replace("_", " ").title(),
+        )
+        description = next(
+            (line for line in lines if not line.startswith("#")),
+            "No description provided.",
+        )
+        skills.append(
+            {
+                "name": heading,
+                "slug": skill_file.stem,
+                "description": description,
+            }
+        )
+    return skills
 
 
 def build_ollama_history():
@@ -255,9 +347,12 @@ def index():
         if not ollama_error:
             return redirect(url_for("index"))
 
+    chat_state = get_chat_state()
     return render_template(
         "index.html",
         messages=get_messages(),
+        skills=get_available_skills(),
+        clear_version=chat_state["clear_version"],
         username=session.get("username", ""),
         ollama_model=session.get("ollama_model", OLLAMA_MODEL),
         ollama_error=ollama_error,
@@ -267,6 +362,32 @@ def index():
 @app.route("/uploads/<path:filename>")
 def uploads(filename):
     return send_from_directory(UPLOAD_FOLDER, filename)
+
+
+@app.route("/api/messages")
+def messages_api():
+    try:
+        after_id = max(0, int(request.args.get("after_id", "0")))
+    except ValueError:
+        return jsonify({"error": "after_id must be an integer"}), 400
+
+    messages = get_messages_after(after_id)
+    for message in messages:
+        message["upload_url"] = (
+            url_for("uploads", filename=message["file"]) if message["file"] else None
+        )
+    return jsonify({"messages": messages, **get_chat_state()})
+
+
+@app.route("/api/skills")
+def skills_api():
+    return jsonify({"skills": get_available_skills()})
+
+
+@app.route("/api/messages/clear", methods=["POST"])
+def clear_messages_api():
+    clear_messages()
+    return jsonify({"cleared": True, **get_chat_state()})
 
 
 init_db()

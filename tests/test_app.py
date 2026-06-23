@@ -11,7 +11,9 @@ class ChatAppTestCase(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         chat_app.DATABASE = str(Path(self.temp_dir.name) / "test.db")
         chat_app.UPLOAD_FOLDER = str(Path(self.temp_dir.name) / "uploads")
+        chat_app.SKILLS_DIR = str(Path(self.temp_dir.name) / "skills")
         Path(chat_app.UPLOAD_FOLDER).mkdir()
+        Path(chat_app.SKILLS_DIR).mkdir()
         chat_app.init_db()
         chat_app.app.config.update(TESTING=True, SECRET_KEY="test")
         self.client = chat_app.app.test_client()
@@ -29,6 +31,59 @@ class ChatAppTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Hello", response.data)
         self.assertEqual(chat_app.get_messages()[0]["user"], "Alice")
+
+    def test_messages_api_returns_only_newer_messages(self):
+        chat_app.add_message("Alice", "First")
+        first_id = chat_app.get_messages()[0]["id"]
+        chat_app.add_message("Bob", "Second", file_path="example.txt", original_name="example.txt")
+
+        response = self.client.get(f"/api/messages?after_id={first_id}")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(len(payload["messages"]), 1)
+        self.assertEqual(payload["messages"][0]["user"], "Bob")
+        self.assertEqual(payload["messages"][0]["upload_url"], "/uploads/example.txt")
+        self.assertEqual(payload["message_count"], 2)
+        self.assertEqual(payload["latest_id"], payload["messages"][0]["id"])
+
+    def test_messages_api_rejects_invalid_message_id(self):
+        response = self.client.get("/api/messages?after_id=not-a-number")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_clear_chat_removes_messages(self):
+        chat_app.add_message("Alice", "Hello")
+
+        response = self.client.post("/api/messages/clear")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["cleared"])
+        self.assertEqual(response.get_json()["clear_version"], 1)
+        self.assertEqual(chat_app.get_messages(), [])
+
+        second_response = self.client.post("/api/messages/clear")
+        self.assertEqual(second_response.get_json()["clear_version"], 2)
+
+    def test_skills_api_lists_markdown_skills(self):
+        Path(chat_app.SKILLS_DIR, "coding.md").write_text(
+            "# Coding skill\n\nWrite and verify code safely.",
+            encoding="utf-8",
+        )
+
+        response = self.client.get("/api/skills")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json()["skills"],
+            [
+                {
+                    "name": "Coding skill",
+                    "slug": "coding",
+                    "description": "Write and verify code safely.",
+                }
+            ],
+        )
 
     @patch("app.call_ollama", return_value="Hello Alice")
     def test_ollama_reply_is_added_as_third_participant(self, call_ollama):
