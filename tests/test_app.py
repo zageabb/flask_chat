@@ -85,6 +85,23 @@ class ChatAppTestCase(unittest.TestCase):
             ],
         )
 
+    def test_agent_status_api_reports_current_state(self):
+        chat_app.set_agent_status(
+            active=True,
+            state="running_tool",
+            message="Searching the web.",
+            tool="web_search",
+            arguments={"query": "ollama"},
+        )
+
+        response = self.client.get("/api/agent/status")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["active"])
+        self.assertEqual(payload["tool"], "web_search")
+        self.assertEqual(payload["arguments"]["query"], "ollama")
+
     @patch("app.call_ollama", return_value="Hello Alice")
     def test_ollama_reply_is_added_as_third_participant(self, call_ollama):
         response = self.client.post(
@@ -129,6 +146,37 @@ class ChatAppTestCase(unittest.TestCase):
         self.assertEqual(messages[1]["user"], "Ollama Agent")
         self.assertIn("write_file", messages[1]["trace"])
         call_agent.assert_called_once_with("tool-model")
+
+    @patch(
+        "app.call_agent",
+        return_value=(
+            "Search complete.",
+            [
+                {
+                    "step": 1,
+                    "tool": "web_search",
+                    "status": "Web search returned 1 result(s).",
+                    "result": "[]",
+                }
+            ],
+        ),
+    )
+    def test_fetch_post_returns_json_for_agent_mode(self, call_agent):
+        response = self.client.post(
+            "/",
+            data={
+                "username": "Alice",
+                "message": "Search for Ollama",
+                "ask_ollama": "on",
+                "agent_mode": "on",
+                "ollama_model": "tool-model",
+            },
+            headers={"X-Requested-With": "fetch"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["ok"])
+        self.assertEqual(len(chat_app.get_messages()), 2)
 
     def test_history_contains_human_names_and_assistant_replies(self):
         chat_app.add_message("Alice", "How are you?")

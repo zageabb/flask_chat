@@ -69,6 +69,7 @@ class AgentToolsTestCase(unittest.TestCase):
         results = json.loads(agent.web_search("ollama tools", 3))
 
         self.assertEqual(results[0]["title"], "Ollama docs")
+        self.assertEqual(results[0]["source"], "searxng")
         self.assertIn("/search?q=ollama+tools&format=json", http_get.call_args.args[0])
 
     @patch("agent.duckduckgo_search")
@@ -77,12 +78,17 @@ class AgentToolsTestCase(unittest.TestCase):
         self, searxng_search, duckduckgo_search
     ):
         duckduckgo_search.return_value = [
-            {"title": "Fallback", "url": "https://example.com"}
+            {
+                "title": "Fallback",
+                "url": "https://example.com",
+                "source": "duckduckgo-fallback",
+            }
         ]
 
         results = json.loads(agent.web_search("fallback", 2))
 
         self.assertEqual(results[0]["title"], "Fallback")
+        self.assertEqual(results[0]["source"], "duckduckgo-fallback")
 
     def test_agent_loop_executes_tool_and_returns_final_answer(self):
         instructions = Path(self.workspace) / "instructions.md"
@@ -125,7 +131,52 @@ class AgentToolsTestCase(unittest.TestCase):
 
         self.assertEqual(answer, "Created hello.py.")
         self.assertEqual(trace[0]["tool"], "write_file")
+        self.assertEqual(trace[0]["status"], "Wrote 14 bytes to hello.py")
         self.assertTrue((Path(self.workspace) / "hello.py").exists())
+
+    def test_agent_loop_reports_live_tool_status(self):
+        instructions = Path(self.workspace) / "instructions.md"
+        skills = Path(self.workspace) / "skills"
+        instructions.write_text("Be useful.", encoding="utf-8")
+        skills.mkdir()
+        statuses = []
+        responses = iter(
+            [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "web_search",
+                                "arguments": {"query": "local search"},
+                            }
+                        }
+                    ],
+                },
+                {"role": "assistant", "content": "Found it."},
+            ]
+        )
+
+        with patch(
+            "agent.web_search",
+            return_value='[{"title": "A", "url": "https://a.test", "source": "searxng"}]',
+        ):
+            answer, trace = agent.run_agent(
+                "test",
+                [{"role": "user", "content": "Search"}],
+                lambda model, messages, tools: next(responses),
+                self.workspace,
+                instructions,
+                skills,
+                status_callback=statuses.append,
+            )
+
+        self.assertEqual(answer, "Found it.")
+        self.assertIn("Searching the web", statuses[1]["message"])
+        self.assertEqual(statuses[1]["tool"], "web_search")
+        self.assertEqual(
+            trace[0]["status"], "Web search returned 1 result(s) from SearXNG."
+        )
 
     def test_string_tool_arguments_are_supported(self):
         responses = iter(

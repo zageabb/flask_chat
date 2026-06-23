@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -40,6 +41,32 @@ SKILLS_DIR = os.environ.get("SKILLS_DIR", os.path.join(BASE_DIR, "skills"))
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(AGENT_WORKSPACE, exist_ok=True)
+
+AGENT_STATUS_LOCK = threading.Lock()
+AGENT_STATUS = {
+    "active": False,
+    "state": "idle",
+    "message": "Agent is idle.",
+    "step": None,
+    "tool": None,
+    "arguments": {},
+    "updated_at": None,
+}
+
+
+def set_agent_status(**updates):
+    with AGENT_STATUS_LOCK:
+        AGENT_STATUS.update(
+            {
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+                **updates,
+            }
+        )
+
+
+def get_agent_status():
+    with AGENT_STATUS_LOCK:
+        return dict(AGENT_STATUS)
 
 
 def get_db():
@@ -283,8 +310,20 @@ def call_ollama(model):
 
 
 def call_agent(model):
+    set_agent_status(
+        active=True,
+        state="starting",
+        message="Agent is starting.",
+        step=None,
+        tool=None,
+        arguments={},
+    )
+
+    def update_status(event):
+        set_agent_status(active=event.get("state") not in {"complete", "error"}, **event)
+
     try:
-        return run_agent(
+        result = run_agent(
             model=model,
             messages=build_ollama_history(),
             ollama_chat=ollama_chat,
@@ -292,9 +331,34 @@ def call_agent(model):
             base_instructions_file=BASE_INSTRUCTIONS_FILE,
             skills_dir=SKILLS_DIR,
             max_steps=AGENT_MAX_STEPS,
+            status_callback=update_status,
         )
+        set_agent_status(
+            active=False,
+            state="complete",
+            message="Agent finished.",
+            tool=None,
+            arguments={},
+        )
+        return result
     except OSError as error:
+        set_agent_status(
+            active=False,
+            state="error",
+            message=f"Agent configuration error: {error}",
+            tool=None,
+            arguments={},
+        )
         raise RuntimeError(f"Agent configuration error: {error}") from error
+    except RuntimeError as error:
+        set_agent_status(
+            active=False,
+            state="error",
+            message=str(error),
+            tool=None,
+            arguments={},
+        )
+        raise
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -344,6 +408,11 @@ def index():
                 except RuntimeError as error:
                     ollama_error = str(error)
 
+        if request.headers.get("X-Requested-With") == "fetch":
+            if ollama_error:
+                return jsonify({"ok": False, "error": ollama_error}), 500
+            return jsonify({"ok": True, **get_chat_state()})
+
         if not ollama_error:
             return redirect(url_for("index"))
 
@@ -382,6 +451,11 @@ def messages_api():
 @app.route("/api/skills")
 def skills_api():
     return jsonify({"skills": get_available_skills()})
+
+
+@app.route("/api/agent/status")
+def agent_status_api():
+    return jsonify(get_agent_status())
 
 
 @app.route("/api/messages/clear", methods=["POST"])

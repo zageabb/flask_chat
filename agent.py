@@ -195,6 +195,7 @@ def searxng_search(query, max_results):
                 "title": result.get("title", ""),
                 "url": result.get("url", ""),
                 "snippet": result.get("content", ""),
+                "source": "searxng",
             }
         )
     return results
@@ -204,7 +205,10 @@ def duckduckgo_search(query, max_results):
     _, body = http_get(f"https://html.duckduckgo.com/html/?q={quote_plus(query)}")
     parser = SearchResultParser()
     parser.feed(body)
-    return parser.results[:max_results]
+    return [
+        {**result, "source": "duckduckgo-fallback"}
+        for result in parser.results[:max_results]
+    ]
 
 
 def web_search(query, max_results=5):
@@ -373,6 +377,7 @@ def run_agent(
     base_instructions_file,
     skills_dir,
     max_steps=8,
+    status_callback=None,
 ):
     agent_messages = [
         {
@@ -386,11 +391,27 @@ def run_agent(
     trace = []
 
     for step in range(1, max_steps + 1):
+        if status_callback:
+            status_callback(
+                {
+                    "state": "thinking",
+                    "step": step,
+                    "message": f"Agent is thinking about step {step}.",
+                }
+            )
         response_message = ollama_chat(model, agent_messages, TOOL_SCHEMAS)
         agent_messages.append(response_message)
         tool_calls = response_message.get("tool_calls") or []
         if not tool_calls:
             content = (response_message.get("content") or "").strip()
+            if status_callback:
+                status_callback(
+                    {
+                        "state": "complete",
+                        "step": step,
+                        "message": "Agent finished without calling another tool.",
+                    }
+                )
             return content or "The agent completed without a text response.", trace
 
         for tool_call in tool_calls:
@@ -402,15 +423,35 @@ def run_agent(
                     arguments = json.loads(arguments)
                 except json.JSONDecodeError:
                     arguments = {}
+            if status_callback:
+                status_callback(
+                    {
+                        "state": "running_tool",
+                        "step": step,
+                        "tool": name,
+                        "arguments": arguments,
+                        "message": describe_tool_start(name, arguments),
+                    }
+                )
             result = execute_tool(name, arguments, workspace)
-            trace.append(
-                {
-                    "step": step,
-                    "tool": name,
-                    "arguments": arguments,
-                    "result": truncate(result, 1_000),
-                }
-            )
+            trace_entry = {
+                "step": step,
+                "tool": name,
+                "arguments": arguments,
+                "status": describe_tool_result(name, result),
+                "result": truncate(result, 1_000),
+            }
+            trace.append(trace_entry)
+            if status_callback:
+                status_callback(
+                    {
+                        "state": "tool_complete",
+                        "step": step,
+                        "tool": name,
+                        "arguments": arguments,
+                        "message": trace_entry["status"],
+                    }
+                )
             agent_messages.append(
                 {"role": "tool", "tool_name": name, "content": str(result)}
             )
@@ -425,7 +466,61 @@ def run_agent(
         }
     )
     final_message = ollama_chat(model, agent_messages, [])
+    if status_callback:
+        status_callback(
+            {
+                "state": "complete",
+                "step": max_steps,
+                "message": "Agent stopped at the step limit and wrote a final answer.",
+            }
+        )
     return (
         (final_message.get("content") or "Agent stopped at its step limit.").strip(),
         trace,
     )
+
+
+def describe_tool_start(name, arguments):
+    if name == "web_search":
+        query = arguments.get("query", "")
+        return f'Searching the web for "{query}" via SearXNG.'
+    if name == "fetch_url":
+        return f"Fetching URL: {arguments.get('url', '')}"
+    if name == "run_command":
+        return f"Running command: {arguments.get('command', '')}"
+    if name == "read_file":
+        return f"Reading file: {arguments.get('path', '')}"
+    if name == "write_file":
+        return f"Writing file: {arguments.get('path', '')}"
+    if name == "list_files":
+        return f"Listing files: {arguments.get('path', '.')}"
+    return f"Running tool: {name}"
+
+
+def describe_tool_result(name, result):
+    result_text = str(result)
+    if name == "web_search":
+        if result_text.startswith("SearXNG search failed"):
+            return "Web search failed on SearXNG and the fallback."
+        if result_text.startswith("Search failed"):
+            return "Web search failed."
+        if result_text == "No search results found.":
+            return "Web search completed with no results."
+        try:
+            parsed = json.loads(result_text)
+        except json.JSONDecodeError:
+            return "Web search completed."
+        source = parsed[0].get("source") if parsed else None
+        if source == "searxng":
+            return f"Web search returned {len(parsed)} result(s) from SearXNG."
+        if source == "duckduckgo-fallback":
+            return (
+                f"Web search returned {len(parsed)} result(s) from the fallback search."
+            )
+        return f"Web search returned {len(parsed)} result(s)."
+    if name == "fetch_url":
+        return f"Fetched {len(result_text)} character(s)."
+    if name == "run_command":
+        first_line = result_text.splitlines()[0] if result_text else "Command finished."
+        return first_line
+    return result_text.splitlines()[0] if result_text else f"{name} completed."

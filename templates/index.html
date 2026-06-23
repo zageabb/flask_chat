@@ -31,6 +31,32 @@
             color: #b71c1c;
         }
 
+        .agent-status {
+            background: #eef7ff;
+            border: 1px solid #bbdefb;
+            border-radius: 8px;
+            color: #0d47a1;
+            font-size: 13px;
+            margin: 0 0 10px;
+            padding: 9px 12px;
+        }
+
+        .agent-status.idle {
+            display: none;
+        }
+
+        .agent-status.error {
+            background: #ffebee;
+            border-color: #ef9a9a;
+            color: #b71c1c;
+        }
+
+        .agent-status small {
+            color: #667;
+            display: block;
+            margin-top: 3px;
+        }
+
         .chat-toolbar {
             align-items: center;
             display: flex;
@@ -135,6 +161,23 @@
             white-space: pre-wrap;
         }
 
+        .tool-list {
+            list-style: none;
+            margin: 8px 0 0;
+            padding: 0;
+        }
+
+        .tool-list li {
+            border-top: 1px solid #eee;
+            padding: 7px 0;
+        }
+
+        .tool-list code {
+            background: #f5f5f5;
+            border-radius: 4px;
+            padding: 1px 4px;
+        }
+
         .file-box {
             margin-top: 5px;
             padding: 8px;
@@ -186,6 +229,7 @@
 <div class="container">
     <h2>Chat</h2>
     <p class="sync-status" aria-live="polite">Live updates on</p>
+    <p class="agent-status idle" id="agent-status" aria-live="polite">Agent is idle.</p>
 
     {% if ollama_error %}
         <p class="error">{{ ollama_error }}</p>
@@ -246,7 +290,7 @@
         {% endfor %}
     </div>
 
-    <form method="post" enctype="multipart/form-data">
+    <form method="post" enctype="multipart/form-data" id="chat-form">
         <input type="text" name="username" placeholder="Your name" value="{{ username }}" required>
         <input type="text" name="message" placeholder="Message">
         <input type="file" name="file">
@@ -276,6 +320,9 @@
 <script>
     const chatBox = document.querySelector(".chat-box");
     const syncStatus = document.querySelector(".sync-status");
+    const agentStatus = document.querySelector("#agent-status");
+    const chatForm = document.querySelector("#chat-form");
+    const submitButton = chatForm.querySelector('button[type="submit"]');
     const skillsPanel = document.querySelector("#skills-panel");
     const toggleSkillsButton = document.querySelector("#toggle-skills");
     const clearChatButton = document.querySelector("#clear-chat");
@@ -302,6 +349,55 @@
         return "📁";
     }
 
+    function formatArguments(argumentsValue) {
+        if (!argumentsValue || Object.keys(argumentsValue).length === 0) return "";
+        return Object.entries(argumentsValue)
+            .map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`)
+            .join(", ");
+    }
+
+    function appendToolTrace(container, traceValue) {
+        const details = document.createElement("details");
+        details.className = "tool-trace";
+        const summary = document.createElement("summary");
+        summary.textContent = "Agent tool activity";
+        details.appendChild(summary);
+
+        try {
+            const entries = JSON.parse(traceValue);
+            const list = document.createElement("ul");
+            list.className = "tool-list";
+            entries.forEach(entry => {
+                const item = document.createElement("li");
+                const title = document.createElement("div");
+                title.innerHTML = `Step ${entry.step}: <code></code>`;
+                title.querySelector("code").textContent = entry.tool || "tool";
+                item.appendChild(title);
+
+                if (entry.status) {
+                    const status = document.createElement("div");
+                    status.textContent = entry.status;
+                    item.appendChild(status);
+                }
+
+                const args = formatArguments(entry.arguments || {});
+                if (args) {
+                    const argumentsLine = document.createElement("small");
+                    argumentsLine.textContent = args;
+                    item.appendChild(argumentsLine);
+                }
+                list.appendChild(item);
+            });
+            details.appendChild(list);
+        } catch (error) {
+            const trace = document.createElement("pre");
+            trace.textContent = traceValue;
+            details.appendChild(trace);
+        }
+
+        container.appendChild(details);
+    }
+
     function appendMessage(message) {
         if (chatBox.querySelector(`[data-message-id="${message.id}"]`)) return;
 
@@ -322,14 +418,7 @@
         messageElement.appendChild(document.createTextNode(message.text || ""));
 
         if (message.trace) {
-            const details = document.createElement("details");
-            details.className = "tool-trace";
-            const summary = document.createElement("summary");
-            summary.textContent = "Agent tool activity";
-            const trace = document.createElement("pre");
-            trace.textContent = message.trace;
-            details.append(summary, trace);
-            messageElement.appendChild(details);
+            appendToolTrace(messageElement, message.trace);
         }
 
         if (message.file && message.upload_url) {
@@ -388,6 +477,69 @@
         }
     }
 
+    async function syncAgentStatus() {
+        try {
+            const response = await fetch("/api/agent/status", {
+                cache: "no-store",
+                headers: { "Accept": "application/json" }
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const status = await response.json();
+            agentStatus.className = `agent-status ${status.active ? "" : "idle"} ${status.state === "error" ? "error" : ""}`;
+            agentStatus.textContent = status.message || "Agent is working…";
+            if (status.tool && status.arguments) {
+                const details = document.createElement("small");
+                details.textContent = `${status.tool}: ${formatArguments(status.arguments)}`;
+                agentStatus.appendChild(details);
+            }
+        } catch (error) {
+            if (!submitButton.disabled) {
+                agentStatus.className = "agent-status idle";
+            }
+        }
+    }
+
+    async function submitChat(event) {
+        event.preventDefault();
+        submitButton.disabled = true;
+        syncStatus.textContent = "Sending…";
+        syncStatus.classList.remove("offline");
+
+        const formData = new FormData(chatForm);
+        const usingAgent = formData.get("ask_ollama") === "on" && formData.get("agent_mode") === "on";
+        if (usingAgent) {
+            agentStatus.className = "agent-status";
+            agentStatus.textContent = "Agent request sent. Waiting for first status…";
+        }
+
+        try {
+            const response = await fetch("/", {
+                method: "POST",
+                body: formData,
+                headers: {
+                    "Accept": "application/json",
+                    "X-Requested-With": "fetch"
+                }
+            });
+            const payload = await response.json();
+            if (!response.ok || !payload.ok) {
+                throw new Error(payload.error || `HTTP ${response.status}`);
+            }
+            chatForm.elements.message.value = "";
+            chatForm.elements.file.value = "";
+            await syncMessages();
+            await syncAgentStatus();
+            syncStatus.textContent = "Sent";
+        } catch (error) {
+            syncStatus.textContent = error.message || "Could not send message";
+            syncStatus.classList.add("offline");
+            agentStatus.className = "agent-status error";
+            agentStatus.textContent = error.message || "Agent request failed.";
+        } finally {
+            submitButton.disabled = false;
+        }
+    }
+
     async function clearChat() {
         if (!window.confirm("Clear all chat messages for everyone?")) return;
         clearChatButton.disabled = true;
@@ -416,9 +568,11 @@
         skillsPanel.hidden = !skillsPanel.hidden;
         toggleSkillsButton.textContent = skillsPanel.hidden ? "Available skills" : "Hide skills";
     });
+    chatForm.addEventListener("submit", submitChat);
     clearChatButton.addEventListener("click", clearChat);
     chatBox.scrollTop = chatBox.scrollHeight;
     window.setInterval(syncMessages, pollIntervalMs);
+    window.setInterval(syncAgentStatus, 1000);
     document.addEventListener("visibilitychange", () => {
         if (!document.hidden) syncMessages();
     });
