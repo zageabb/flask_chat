@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+chat.db
+static/uploads/*
+!static/uploads/uploads_here.txt
+agent_workspace/*
+!agent_workspace/.gitkeep

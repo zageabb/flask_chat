@@ -1,0 +1,6 @@
+.git
+__pycache__
+*.pyc
+chat.db
+tests
+agent_workspace/*

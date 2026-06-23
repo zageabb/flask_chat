@@ -41,6 +41,56 @@
             color: #0d47a1;
         }
 
+        .message.ollama {
+            background: #f3e5f5;
+        }
+
+        .message.ollama b {
+            color: #6a1b9a;
+        }
+
+        .timestamp {
+            color: #777;
+            float: right;
+            font-size: 12px;
+        }
+
+        .error {
+            background: #ffebee;
+            border: 1px solid #ef9a9a;
+            border-radius: 6px;
+            color: #b71c1c;
+            padding: 10px;
+        }
+
+        .ollama-options {
+            align-items: center;
+            background: #f3e5f5;
+            border-radius: 6px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 10px;
+        }
+
+        .ollama-options input[type="text"] {
+            flex: 1;
+            min-width: 160px;
+        }
+
+        .tool-trace {
+            background: #fff;
+            border-radius: 6px;
+            font-size: 12px;
+            margin-top: 8px;
+            padding: 8px;
+        }
+
+        .tool-trace pre {
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }
+
         .file-box {
             margin-top: 5px;
             padding: 8px;
@@ -92,11 +142,23 @@
 <div class="container">
     <h2>Chat</h2>
 
+    {% if ollama_error %}
+        <p class="error">{{ ollama_error }}</p>
+    {% endif %}
+
     <div class="chat-box">
         {% for msg in messages %}
-            <div class="message">
+            <div class="message {% if msg.role == 'assistant' %}ollama{% endif %}">
+                <span class="timestamp">{{ msg.created_at }}</span>
                 <b>{{ msg.user }}</b><br>
                 {{ msg.text }}
+
+                {% if msg.trace %}
+                    <details class="tool-trace">
+                        <summary>Agent tool activity</summary>
+                        <pre>{{ msg.trace }}</pre>
+                    </details>
+                {% endif %}
 
                 {% if msg.file %}
                     <div class="file-box">
@@ -122,6 +184,23 @@
         <input type="text" name="username" placeholder="Your name" value="{{ username }}" required>
         <input type="text" name="message" placeholder="Message">
         <input type="file" name="file">
+        <div class="ollama-options">
+            <label>
+                <input type="checkbox" name="ask_ollama">
+                Ask Ollama to join in
+            </label>
+            <label title="Allows Ollama to search the web, write code, inspect files, and run guarded commands">
+                <input type="checkbox" name="agent_mode">
+                Autonomous agent mode
+            </label>
+            <input
+                type="text"
+                name="ollama_model"
+                value="{{ ollama_model }}"
+                aria-label="Ollama model"
+                placeholder="Ollama model"
+            >
+        </div>
         <button type="submit">Send</button>
     </form>
 </div>
