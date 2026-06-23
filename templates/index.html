@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Flask Chat</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f6f9;
+            margin: 0;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: auto;
+            padding: 20px;
+        }
+
+        h2 {
+            text-align: center;
+        }
+
+        .chat-box {
+            background: white;
+            height: 450px;
+            overflow-y: auto;
+            padding: 10px;
+            border-radius: 10px;
+            border: 1px solid #ddd;
+            margin-bottom: 15px;
+        }
+
+        .message {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 10px;
+            background: #e3f2fd;
+        }
+
+        .message b {
+            color: #0d47a1;
+        }
+
+        .file-box {
+            margin-top: 5px;
+            padding: 8px;
+            background: #f1f1f1;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+        }
+
+        .file-icon {
+            margin-right: 8px;
+            font-size: 20px;
+        }
+
+        form {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        input[type="text"] {
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+        }
+
+        input[type="file"] {
+            border: none;
+        }
+
+        button {
+            padding: 10px;
+            border: none;
+            background: #1976d2;
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #0d47a1;
+        }
+
+    </style>
+
+</head>
+<body>
+
+<div class="container">
+    <h2>Chat</h2>
+
+    <div class="chat-box">
+        {% for msg in messages %}
+            <div class="message">
+                <b>{{ msg.user }}</b><br>
+                {{ msg.text }}
+
+                {% if msg.file %}
+                    <div class="file-box">
+                        <span class="file-icon">
+                            {% if msg.filename.endswith('.pdf') %}📄
+                            {% elif msg.filename.endswith('.xlsx') %}📊
+                            {% elif msg.filename.endswith('.docx') %}📝
+                            {% elif msg.filename.endswith('.jpg') or msg.filename.endswith('.png') %}🖼️
+                            {% else %}📁
+                            {% endif %}
+                        </span>
+
+                        <a href="{{ url_for('uploads', filename=msg.file) }}" target="_blank">
+                            {{ msg.filename }}
+                        </a>
+                    </div>
+                {% endif %}
+            </div>
+        {% endfor %}
+    </div>
+
+    <form method="post" enctype="multipart/form-data">
+        <input type="text" name="username" placeholder="Your name" value="{{ username }}" required>
+        <input type="text" name="message" placeholder="Message">
+        <input type="file" name="file">
+        <button type="submit">Send</button>
+    </form>
+</div>
+
+</body>
+
+<script>
+    const chatBox = document.querySelector(".chat-box");
+    chatBox.scrollTop = chatBox.scrollHeight;
+</script>
+
+</html>
