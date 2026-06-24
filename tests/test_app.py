@@ -375,6 +375,27 @@ class ChatAppTestCase(unittest.TestCase):
         self.assertEqual(history[0], {"role": "user", "content": "Alice: How are you?"})
         self.assertEqual(history[1], {"role": "assistant", "content": "Doing well."})
 
+    def test_agent_context_history_starts_with_chat_window_context(self):
+        chat_app.add_message("Alice", "Earlier request")
+        chat_app.add_message("Ollama", "Earlier answer", role="assistant")
+        chat_app.add_message(
+            "Alice",
+            "Please use this document",
+            file_path='["brief.txt"]',
+            original_name='["brief.txt"]',
+            document_text="Attached document text for analysis:\n\n## Attached document: brief.txt\nImportant notes",
+        )
+
+        history = chat_app.build_agent_context_history()
+
+        self.assertEqual(history[0]["role"], "user")
+        self.assertIn("Chat window context", history[0]["content"])
+        self.assertIn("Alice: Earlier request", history[0]["content"])
+        self.assertIn("Ollama Agent: Earlier answer", history[0]["content"])
+        self.assertIn("Attached files: brief.txt", history[0]["content"])
+        self.assertIn("Extracted document text is available", history[0]["content"])
+        self.assertIn("Important notes", history[-1]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()

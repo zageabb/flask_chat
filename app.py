@@ -518,6 +518,48 @@ def build_ollama_history():
     return history
 
 
+def format_chat_context_message(messages):
+    lines = [
+        "Chat window context for the current request:",
+        "Use this transcript to understand what has already been discussed, "
+        "what the user has asked for previously, and any assistant answers "
+        "already shown in the chat.",
+        "",
+    ]
+
+    for index, message in enumerate(messages, start=1):
+        text = (message["text"] or "").strip()
+        filenames = as_list(message.get("filename"))
+        speaker = "Ollama Agent" if message["role"] == "assistant" else message["user"]
+
+        parts = []
+        if text:
+            parts.append(text)
+        if filenames:
+            parts.append("Attached files: " + ", ".join(filenames))
+        if message.get("document_text"):
+            parts.append("Extracted document text is available in this chat context.")
+        if not parts:
+            continue
+
+        lines.append(f"{index}. {speaker}: " + "\n   ".join(parts))
+
+    return "\n".join(lines).strip()
+
+
+def build_agent_context_history():
+    messages = get_messages(limit=AGENT_CONTEXT_MESSAGES)
+    if not messages:
+        return []
+
+    context = format_chat_context_message(messages)
+    history = build_ollama_history()
+    if not context:
+        return history
+
+    return [{"role": "user", "content": context}, *history]
+
+
 def ollama_chat(model, messages, tools=None):
     options = {}
     if OLLAMA_NUM_CTX:
@@ -726,7 +768,7 @@ def index():
             if ask_ollama:
                 agent_job_id = start_agent_job(
                     ollama_model,
-                    build_ollama_history(),
+                    build_agent_context_history(),
                     summarize_agent_job_title(
                         text,
                         original_names[0] if original_names else None,
