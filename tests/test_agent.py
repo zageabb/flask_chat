@@ -64,6 +64,19 @@ class AgentToolsTestCase(unittest.TestCase):
         self.assertTrue((Path(self.workspace) / "outputs" / "brief.docx").exists())
         self.assertTrue((Path(self.workspace) / "outputs" / "table.xlsx").exists())
 
+    def test_document_tools_tolerate_common_argument_aliases(self):
+        result = agent.execute_tool(
+            "create_markdown",
+            {"text": "# Summary\n\nHello"},
+            self.workspace,
+        )
+
+        self.assertIn("outputs/agent_output.md", result)
+        self.assertEqual(
+            (Path(self.workspace) / "outputs" / "agent_output.md").read_text(),
+            "# Summary\n\nHello",
+        )
+
     def test_search_result_parser_extracts_links(self):
         parser = agent.SearchResultParser()
         parser.feed(
@@ -288,6 +301,70 @@ class AgentToolsTestCase(unittest.TestCase):
 
         self.assertEqual(answer, "Helium is a noble gas.")
         self.assertEqual(trace[0]["tool"], "read_file")
+
+    def test_embedded_json_tool_call_is_executed_not_returned(self):
+        orchestrator = Path(self.workspace) / "orchestrator.md"
+        instructions = Path(self.workspace) / "instructions.md"
+        skills = Path(self.workspace) / "skills"
+        orchestrator.write_text("Decide when tools are needed.", encoding="utf-8")
+        instructions.write_text("Be useful.", encoding="utf-8")
+        skills.mkdir()
+        responses = iter(
+            [
+                {
+                    "role": "assistant",
+                    "content": (
+                        "I will fetch the official page now.\n"
+                        '{"name":"fetch_url","parameters":{"url":"https://example.test/spec"}}'
+                    ),
+                },
+                {"role": "assistant", "content": "Here is the final spec summary."},
+            ]
+        )
+
+        with patch("agent.fetch_url", return_value="Official spec text"):
+            answer, trace = agent.run_agent(
+                "test",
+                [{"role": "user", "content": "Get the spec"}],
+                lambda model, messages, tools: next(responses),
+                self.workspace,
+                instructions,
+                orchestrator,
+                skills,
+            )
+
+        self.assertEqual(answer, "Here is the final spec summary.")
+        self.assertEqual(trace[0]["tool"], "fetch_url")
+
+    def test_planning_leak_is_not_returned_as_final_answer(self):
+        orchestrator = Path(self.workspace) / "orchestrator.md"
+        instructions = Path(self.workspace) / "instructions.md"
+        skills = Path(self.workspace) / "skills"
+        orchestrator.write_text("Decide when tools are needed.", encoding="utf-8")
+        instructions.write_text("Be useful.", encoding="utf-8")
+        skills.mkdir()
+        responses = iter(
+            [
+                {
+                    "role": "assistant",
+                    "content": "I will use the fetch_url tool with parameters soon.",
+                },
+                {"role": "assistant", "content": "Final answer for the chat."},
+            ]
+        )
+
+        answer, trace = agent.run_agent(
+            "test",
+            [{"role": "user", "content": "Get the spec"}],
+            lambda model, messages, tools: next(responses),
+            self.workspace,
+            instructions,
+            orchestrator,
+            skills,
+        )
+
+        self.assertEqual(answer, "Final answer for the chat.")
+        self.assertEqual(trace, [])
 
     def test_tool_arguments_content_shape_is_supported(self):
         tool_calls = agent.tool_calls_from_content(

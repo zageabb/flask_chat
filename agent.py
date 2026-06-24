@@ -147,6 +147,16 @@ def create_markdown(workspace, filename, content):
     return f"Created Markdown document: {relative}\nDownload: /agent_outputs/{target.name}"
 
 
+def argument_text(arguments):
+    return arguments.get("content") or arguments.get("text") or arguments.get("body") or ""
+
+
+def argument_filename(arguments, default_name, extension):
+    filename = arguments.get("filename") or arguments.get("path") or default_name
+    filename = Path(str(filename)).name
+    return filename if filename.lower().endswith(extension) else f"{filename}{extension}"
+
+
 def create_csv(workspace, filename, rows):
     target = output_path(workspace, filename, ".csv")
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -510,22 +520,26 @@ def execute_tool(name, arguments, workspace):
         "write_file": lambda: write_file(workspace, arguments["path"], arguments["content"]),
         "run_command": lambda: run_command(workspace, arguments["command"]),
         "create_markdown": lambda: create_markdown(
-            workspace, arguments["filename"], arguments["content"]
+            workspace,
+            argument_filename(arguments, "agent_output", ".md"),
+            argument_text(arguments),
         ),
         "create_docx": lambda: create_docx(
             workspace,
-            arguments["filename"],
+            argument_filename(arguments, "agent_output", ".docx"),
             arguments.get("title", ""),
-            arguments["content"],
+            argument_text(arguments),
         ),
         "create_xlsx": lambda: create_xlsx(
             workspace,
-            arguments["filename"],
+            argument_filename(arguments, "agent_output", ".xlsx"),
             arguments["rows"],
             arguments.get("sheet_name", "Sheet1"),
         ),
         "create_csv": lambda: create_csv(
-            workspace, arguments["filename"], arguments["rows"]
+            workspace,
+            argument_filename(arguments, "agent_output", ".csv"),
+            arguments["rows"],
         ),
         "web_search": lambda: web_search(
             arguments["query"], arguments.get("max_results", 5)
@@ -542,17 +556,56 @@ def execute_tool(name, arguments, workspace):
         return f"Network tool failed: {error}"
 
 
+def json_objects_from_text(content):
+    objects = []
+    start = None
+    depth = 0
+    in_string = False
+    escape = False
+
+    for index, character in enumerate(content or ""):
+        if in_string:
+            if escape:
+                escape = False
+            elif character == "\\":
+                escape = True
+            elif character == '"':
+                in_string = False
+            continue
+
+        if character == '"':
+            in_string = True
+        elif character == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif character == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                objects.append(content[start : index + 1])
+                start = None
+
+    return objects
+
+
 def tool_calls_from_content(content):
     content = (content or "").strip()
     if not content:
         return []
 
+    candidates = []
     try:
         payload = json.loads(content)
+        candidates.extend(payload if isinstance(payload, list) else [payload])
     except json.JSONDecodeError:
-        return []
+        pass
 
-    candidates = payload if isinstance(payload, list) else [payload]
+    for object_text in json_objects_from_text(content):
+        try:
+            candidates.append(json.loads(object_text))
+        except json.JSONDecodeError:
+            continue
+
     tool_calls = []
     for candidate in candidates:
         if not isinstance(candidate, dict):
@@ -586,6 +639,21 @@ def tool_calls_from_content(content):
 
         tool_calls.append({"function": {"name": name, "arguments": arguments}})
     return tool_calls
+
+
+def looks_like_tool_planning(content):
+    text = (content or "").lower()
+    if not text:
+        return False
+    tool_names = [
+        schema["function"]["name"].lower()
+        for schema in TOOL_SCHEMAS
+        if schema.get("function", {}).get("name")
+    ]
+    return (
+        any(tool_name in text for tool_name in tool_names)
+        and any(marker in text for marker in ("parameters", "arguments", "i will use", "tool"))
+    )
 
 
 def load_agent_instructions(
@@ -654,6 +722,32 @@ def run_agent(
         )
         if not tool_calls:
             content = (response_message.get("content") or "").strip()
+            if looks_like_tool_planning(content):
+                agent_messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "That response looked like internal tool planning rather "
+                            "than a user-facing answer. If a tool is needed, call it "
+                            "through the tool interface with valid arguments. If the "
+                            "task is complete, write the final answer for the main "
+                            "chat in clear Markdown. Do not print JSON tool-call "
+                            "objects or orchestration notes."
+                        ),
+                    }
+                )
+                if status_callback:
+                    status_callback(
+                        {
+                            "state": "thinking",
+                            "step": step,
+                            "message": (
+                                "Agent output looked like tool planning; asking the "
+                                "orchestrator to produce a proper chat response."
+                            ),
+                        }
+                    )
+                continue
             if status_callback:
                 status_callback(
                     {
@@ -705,6 +799,20 @@ def run_agent(
             agent_messages.append(
                 {"role": "tool", "tool_name": name, "content": str(result)}
             )
+
+        agent_messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Tool activity above is private work. If you have enough "
+                    "information, hand off to the output writer now: write the "
+                    "final user-facing answer for the main chat in clear Markdown. "
+                    "Do not expose raw tool-call JSON, parameters, or internal "
+                    "orchestration notes. If another tool is genuinely required, "
+                    "call it through the tool interface."
+                ),
+            }
+        )
 
     agent_messages.append(
         {
