@@ -31,7 +31,9 @@ want the model to reply. The orchestrator decides whether to answer directly or
 use tools such as web search, URL fetching, file access, and guarded commands.
 Messages and tool traces are stored in `chat.db`.
 Open clients poll for new messages every two seconds, so conversations stay in
-sync without refreshing the whole page.
+sync without refreshing the whole page. Agent work runs in background jobs:
+the human message is saved immediately, and one or more agent replies can arrive
+later as jobs finish. Multiple agent jobs can run at the same time.
 The toolbar shows the currently loaded Markdown skills and can clear the shared
 chat history. Clearing chat does not delete uploads or files in `agent_workspace/`.
 
@@ -53,7 +55,7 @@ The agent's core safety/tool policy is editable in `base_instructions.md`.
 Additional skill playbooks live under `skills/`; every Markdown file in that
 directory is loaded into the system instructions. Tool activity is visible under
 each agent response, and the live status banner shows recent orchestration
-feedback while work is in progress.
+feedback for multiple concurrent jobs while work is in progress.
 
 This is bounded autonomy, not a hardened OS sandbox. Shell syntax, destructive
 commands, installers, Git, and common network commands are blocked, and execution

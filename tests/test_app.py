@@ -1,7 +1,9 @@
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import app as chat_app
 
@@ -15,7 +17,25 @@ class ChatAppTestCase(unittest.TestCase):
         Path(chat_app.UPLOAD_FOLDER).mkdir()
         Path(chat_app.SKILLS_DIR).mkdir()
         chat_app.init_db()
-        chat_app.app.config.update(TESTING=True, SECRET_KEY="test")
+        chat_app.app.config.update(
+            TESTING=True,
+            SECRET_KEY="test",
+            TESTING_SYNC_AGENT=True,
+        )
+        with chat_app.AGENT_STATUS_LOCK:
+            chat_app.AGENT_STATUS["jobs"] = {}
+            chat_app.AGENT_STATUS.update(
+                {
+                    "active": False,
+                    "state": "idle",
+                    "message": "Agent is idle.",
+                    "step": None,
+                    "tool": None,
+                    "arguments": {},
+                    "events": [],
+                    "updated_at": None,
+                }
+            )
         self.client = chat_app.app.test_client()
 
     def tearDown(self):
@@ -87,6 +107,7 @@ class ChatAppTestCase(unittest.TestCase):
 
     def test_agent_status_api_reports_current_state(self):
         chat_app.set_agent_status(
+            "job123",
             active=True,
             state="running_tool",
             message="Searching the web.",
@@ -102,6 +123,7 @@ class ChatAppTestCase(unittest.TestCase):
         self.assertEqual(payload["tool"], "web_search")
         self.assertEqual(payload["arguments"]["query"], "ollama")
         self.assertEqual(payload["events"][-1]["message"], "Searching the web.")
+        self.assertEqual(payload["jobs"][0]["id"], "job123")
 
     @patch("app.call_agent", return_value=("Hello Alice", []))
     def test_ollama_reply_uses_orchestrator(self, call_agent):
@@ -121,7 +143,7 @@ class ChatAppTestCase(unittest.TestCase):
         self.assertEqual([message["user"] for message in messages], ["Alice", "Ollama Agent"])
         self.assertEqual(messages[1]["role"], "assistant")
         self.assertIsNone(messages[1]["trace"])
-        call_agent.assert_called_once_with("test-model")
+        call_agent.assert_called_once_with("test-model", ANY, ANY)
 
     @patch(
         "app.call_agent",
@@ -146,7 +168,7 @@ class ChatAppTestCase(unittest.TestCase):
         messages = chat_app.get_messages()
         self.assertEqual(messages[1]["user"], "Ollama Agent")
         self.assertIn("write_file", messages[1]["trace"])
-        call_agent.assert_called_once_with("tool-model")
+        call_agent.assert_called_once_with("tool-model", ANY, ANY)
 
     @patch(
         "app.call_agent",
@@ -176,6 +198,43 @@ class ChatAppTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["ok"])
+        self.assertIsNotNone(response.get_json()["agent_job_id"])
+        self.assertEqual(len(chat_app.get_messages()), 2)
+
+    @patch("app.call_agent")
+    def test_fetch_post_returns_before_async_agent_finishes(self, call_agent):
+        chat_app.app.config["TESTING_SYNC_AGENT"] = False
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_agent(model, messages, job_id):
+            started.set()
+            release.wait(timeout=5)
+            return "Async complete.", []
+
+        call_agent.side_effect = slow_agent
+
+        response = self.client.post(
+            "/",
+            data={
+                "username": "Alice",
+                "message": "Search in the background",
+                "ask_ollama": "on",
+                "ollama_model": "tool-model",
+            },
+            headers={"X-Requested-With": "fetch"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["ok"])
+        self.assertTrue(started.wait(timeout=1))
+        self.assertEqual(len(chat_app.get_messages()), 1)
+
+        release.set()
+        for _ in range(20):
+            if len(chat_app.get_messages()) == 2:
+                break
+            time.sleep(0.05)
         self.assertEqual(len(chat_app.get_messages()), 2)
 
     def test_history_contains_human_names_and_assistant_replies(self):

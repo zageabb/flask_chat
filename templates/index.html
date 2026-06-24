@@ -72,6 +72,26 @@
             margin-top: 2px;
         }
 
+        .agent-job {
+            border-top: 1px solid rgba(13, 71, 161, 0.18);
+            margin-top: 9px;
+            padding-top: 8px;
+        }
+
+        .agent-job:first-child {
+            border-top: none;
+            margin-top: 0;
+            padding-top: 0;
+        }
+
+        .agent-job-title {
+            font-weight: bold;
+        }
+
+        .agent-job.complete {
+            opacity: 0.72;
+        }
+
         @media (max-width: 1240px) {
             .agent-status {
                 margin: 0 0 10px;
@@ -513,22 +533,54 @@
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const status = await response.json();
             agentStatus.className = `agent-status ${status.active ? "" : "idle"} ${status.state === "error" ? "error" : ""}`;
-            agentStatus.textContent = status.message || "Agent is working…";
-            if (status.tool && status.arguments) {
-                const details = document.createElement("small");
-                details.textContent = `${status.tool}: ${formatArguments(status.arguments)}`;
-                agentStatus.appendChild(details);
+            agentStatus.replaceChildren();
+
+            const jobs = Array.isArray(status.jobs) ? status.jobs : [];
+            if (!jobs.length) {
+                agentStatus.textContent = "Agent is idle.";
+                return;
             }
-            if (Array.isArray(status.events) && status.events.length > 1) {
-                const events = document.createElement("ul");
-                events.className = "agent-events";
-                status.events.slice(-5).forEach(event => {
-                    const item = document.createElement("li");
-                    item.textContent = `${event.time || ""} ${event.message || ""}`.trim();
-                    events.appendChild(item);
-                });
-                agentStatus.appendChild(events);
-            }
+
+            const heading = document.createElement("div");
+            heading.className = "agent-job-title";
+            const activeCount = jobs.filter(job => job.active).length;
+            heading.textContent = activeCount
+                ? `${activeCount} agent job${activeCount === 1 ? "" : "s"} running`
+                : "Recent agent jobs";
+            agentStatus.appendChild(heading);
+
+            jobs.slice(0, 5).forEach(job => {
+                const card = document.createElement("section");
+                card.className = `agent-job ${job.state || ""}`;
+
+                const title = document.createElement("div");
+                title.className = "agent-job-title";
+                title.textContent = `Job ${job.id || ""} · ${job.state || "working"}`;
+                card.appendChild(title);
+
+                const message = document.createElement("div");
+                message.textContent = job.message || "Agent is working…";
+                card.appendChild(message);
+
+                if (job.tool && job.arguments) {
+                    const details = document.createElement("small");
+                    details.textContent = `${job.tool}: ${formatArguments(job.arguments)}`;
+                    card.appendChild(details);
+                }
+
+                if (Array.isArray(job.events) && job.events.length > 1) {
+                    const events = document.createElement("ul");
+                    events.className = "agent-events";
+                    job.events.slice(-4).forEach(event => {
+                        const item = document.createElement("li");
+                        item.textContent = `${event.time || ""} ${event.message || ""}`.trim();
+                        events.appendChild(item);
+                    });
+                    card.appendChild(events);
+                }
+
+                agentStatus.appendChild(card);
+            });
         } catch (error) {
             if (!submitButton.disabled) {
                 agentStatus.className = "agent-status idle";
@@ -546,7 +598,7 @@
         const usingAgent = formData.get("ask_ollama") === "on";
         if (usingAgent) {
             agentStatus.className = "agent-status";
-            agentStatus.textContent = "Agent request sent. Waiting for first status…";
+            agentStatus.textContent = "Agent request queued…";
         }
 
         try {

@@ -4,6 +4,7 @@ import sqlite3
 import threading
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -59,15 +60,32 @@ AGENT_STATUS = {
     "tool": None,
     "arguments": {},
     "events": [],
+    "jobs": {},
     "updated_at": None,
 }
 
 
-def set_agent_status(**updates):
+def set_agent_status(job_id, **updates):
     with AGENT_STATUS_LOCK:
         reset_events = updates.pop("reset_events", False)
         message = updates.get("message")
-        events = [] if reset_events else list(AGENT_STATUS.get("events", []))
+        jobs = AGENT_STATUS.setdefault("jobs", {})
+        job = jobs.setdefault(
+            job_id,
+            {
+                "id": job_id,
+                "active": False,
+                "state": "queued",
+                "message": "Agent job queued.",
+                "step": None,
+                "tool": None,
+                "arguments": {},
+                "events": [],
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "updated_at": None,
+            },
+        )
+        events = [] if reset_events else list(job.get("events", []))
         if message:
             events.append(
                 {
@@ -76,22 +94,46 @@ def set_agent_status(**updates):
                 }
             )
         events = events[-8:]
-        AGENT_STATUS.update(
+        job.update(
             {
                 "updated_at": datetime.now().isoformat(timespec="seconds"),
                 "events": events,
                 **updates,
             }
         )
+        active_jobs = [item for item in jobs.values() if item.get("active")]
+        visible_jobs = sorted(
+            jobs.values(), key=lambda item: item.get("updated_at") or "", reverse=True
+        )[:10]
+        current = active_jobs[-1] if active_jobs else (visible_jobs[0] if visible_jobs else None)
+        AGENT_STATUS.update(
+            {
+                "active": bool(active_jobs),
+                "state": current.get("state", "idle") if current else "idle",
+                "message": current.get("message", "Agent is idle.") if current else "Agent is idle.",
+                "step": current.get("step") if current else None,
+                "tool": current.get("tool") if current else None,
+                "arguments": current.get("arguments", {}) if current else {},
+                "events": current.get("events", []) if current else [],
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
 
 
 def get_agent_status():
     with AGENT_STATUS_LOCK:
-        return dict(AGENT_STATUS)
+        status = dict(AGENT_STATUS)
+        jobs = sorted(
+            AGENT_STATUS.get("jobs", {}).values(),
+            key=lambda item: item.get("updated_at") or item.get("created_at") or "",
+            reverse=True,
+        )
+        status["jobs"] = [dict(job) for job in jobs[:10]]
+        return status
 
 
 def get_db():
-    connection = sqlite3.connect(DATABASE)
+    connection = sqlite3.connect(DATABASE, timeout=30)
     connection.row_factory = sqlite3.Row
     return connection
 
@@ -102,6 +144,7 @@ def init_db():
 
     connection = get_db()
     try:
+        connection.execute("PRAGMA journal_mode=WAL")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS messages (
@@ -148,7 +191,7 @@ def add_message(
 ):
     connection = get_db()
     try:
-        connection.execute(
+        cursor = connection.execute(
             """
             INSERT INTO messages (user, text, file, filename, role, trace)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -163,6 +206,7 @@ def add_message(
             ),
         )
         connection.commit()
+        return cursor.lastrowid
     finally:
         connection.close()
 
@@ -312,8 +356,9 @@ def ollama_chat(model, messages, tools=None):
     return message
 
 
-def call_agent(model):
+def call_agent(model, messages, job_id):
     set_agent_status(
+        job_id,
         active=True,
         state="starting",
         message="Agent is starting.",
@@ -324,12 +369,16 @@ def call_agent(model):
     )
 
     def update_status(event):
-        set_agent_status(active=event.get("state") not in {"complete", "error"}, **event)
+        set_agent_status(
+            job_id,
+            active=event.get("state") not in {"complete", "error"},
+            **event,
+        )
 
     try:
         result = run_agent(
             model=model,
-            messages=build_ollama_history(),
+            messages=messages,
             ollama_chat=ollama_chat,
             workspace=AGENT_WORKSPACE,
             base_instructions_file=BASE_INSTRUCTIONS_FILE,
@@ -339,6 +388,7 @@ def call_agent(model):
             status_callback=update_status,
         )
         set_agent_status(
+            job_id,
             active=False,
             state="complete",
             message="Agent finished.",
@@ -348,6 +398,7 @@ def call_agent(model):
         return result
     except OSError as error:
         set_agent_status(
+            job_id,
             active=False,
             state="error",
             message=f"Agent configuration error: {error}",
@@ -357,6 +408,7 @@ def call_agent(model):
         raise RuntimeError(f"Agent configuration error: {error}") from error
     except RuntimeError as error:
         set_agent_status(
+            job_id,
             active=False,
             state="error",
             message=str(error),
@@ -366,9 +418,52 @@ def call_agent(model):
         raise
 
 
+def run_agent_job(job_id, model, messages):
+    try:
+        reply, trace = call_agent(model, messages, job_id)
+        add_message(
+            "Ollama Agent",
+            reply,
+            role="assistant",
+            trace=trace,
+        )
+    except RuntimeError as error:
+        add_message(
+            "Ollama Agent",
+            f"Agent error: {error}",
+            role="assistant",
+        )
+
+
+def start_agent_job(model, messages):
+    job_id = uuid4().hex[:8]
+    set_agent_status(
+        job_id,
+        active=True,
+        state="queued",
+        message="Agent job queued.",
+        step=None,
+        tool=None,
+        arguments={},
+        reset_events=True,
+    )
+    thread = threading.Thread(
+        target=run_agent_job,
+        args=(job_id, model, messages),
+        daemon=True,
+        name=f"agent-job-{job_id}",
+    )
+    if app.config.get("TESTING_SYNC_AGENT"):
+        run_agent_job(job_id, model, messages)
+    else:
+        thread.start()
+    return job_id
+
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     ollama_error = None
+    agent_job_id = None
 
     if request.method == "POST":
         username = request.form.get("username", "").strip()
@@ -397,21 +492,12 @@ def index():
             add_message(username, text, file_path, original_name)
 
             if ask_ollama:
-                try:
-                    reply, trace = call_agent(ollama_model)
-                    add_message(
-                        "Ollama Agent",
-                        reply,
-                        role="assistant",
-                        trace=trace,
-                    )
-                except RuntimeError as error:
-                    ollama_error = str(error)
+                agent_job_id = start_agent_job(ollama_model, build_ollama_history())
 
         if request.headers.get("X-Requested-With") == "fetch":
             if ollama_error:
                 return jsonify({"ok": False, "error": ollama_error}), 500
-            return jsonify({"ok": True, **get_chat_state()})
+            return jsonify({"ok": True, "agent_job_id": agent_job_id, **get_chat_state()})
 
         if not ollama_error:
             return redirect(url_for("index"))
