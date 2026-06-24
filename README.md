@@ -33,9 +33,13 @@ Messages and tool traces are stored in `chat.db`.
 Open clients poll for new messages every two seconds, so conversations stay in
 sync without refreshing the whole page. Agent work runs in background jobs:
 the human message is saved immediately, and one or more agent replies can arrive
-later as jobs finish. Multiple agent jobs can run at the same time.
+later as jobs finish. Multiple agent jobs can run at the same time. The status
+panel gives each job a short title based on the request, with the short job ID
+shown underneath for troubleshooting.
 The toolbar shows the currently loaded Markdown skills and can clear the shared
 chat history. Clearing chat does not delete uploads or files in `agent_workspace/`.
+Chat messages render a safe Markdown subset, including tables, lists, inline
+code, and fenced code blocks.
 
 Use a model that supports tool calling, such as a current Qwen model. Models that
 do not support Ollama tool calls may still answer directly, but will not be able

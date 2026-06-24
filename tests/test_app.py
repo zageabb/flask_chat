@@ -108,6 +108,7 @@ class ChatAppTestCase(unittest.TestCase):
     def test_agent_status_api_reports_current_state(self):
         chat_app.set_agent_status(
             "job123",
+            title="Search Ollama",
             active=True,
             state="running_tool",
             message="Searching the web.",
@@ -124,6 +125,21 @@ class ChatAppTestCase(unittest.TestCase):
         self.assertEqual(payload["arguments"]["query"], "ollama")
         self.assertEqual(payload["events"][-1]["message"], "Searching the web.")
         self.assertEqual(payload["jobs"][0]["id"], "job123")
+        self.assertEqual(payload["jobs"][0]["title"], "Search Ollama")
+
+    def test_agent_job_title_is_summarized_from_request(self):
+        title = chat_app.summarize_agent_job_title(
+            "Please search the web and tell me what Hitachi Energy does in simple terms"
+        )
+
+        self.assertLessEqual(len(title), 48)
+        self.assertTrue(title.startswith("Please search the web"))
+
+    def test_agent_job_title_uses_filename_when_message_is_empty(self):
+        self.assertEqual(
+            chat_app.summarize_agent_job_title("", "report.pdf"),
+            "Review report.pdf",
+        )
 
     @patch("app.call_agent", return_value=("Hello Alice", []))
     def test_ollama_reply_uses_orchestrator(self, call_agent):
@@ -199,6 +215,8 @@ class ChatAppTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["ok"])
         self.assertIsNotNone(response.get_json()["agent_job_id"])
+        status = self.client.get("/api/agent/status").get_json()
+        self.assertEqual(status["jobs"][0]["title"], "Search for Ollama")
         self.assertEqual(len(chat_app.get_messages()), 2)
 
     @patch("app.call_agent")

@@ -74,6 +74,7 @@ def set_agent_status(job_id, **updates):
             job_id,
             {
                 "id": job_id,
+                "title": "Agent job",
                 "active": False,
                 "state": "queued",
                 "message": "Agent job queued.",
@@ -435,10 +436,27 @@ def run_agent_job(job_id, model, messages):
         )
 
 
-def start_agent_job(model, messages):
+def summarize_agent_job_title(text=None, filename=None, limit=48):
+    source = (text or "").strip()
+    if not source and filename:
+        source = f"Review {filename}"
+    if not source:
+        return "Agent job"
+
+    source = " ".join(source.split())
+    source = source.strip(" \t\r\n\"'")
+    if len(source) <= limit:
+        return source
+
+    shortened = source[: limit - 1].rsplit(" ", 1)[0].strip()
+    return f"{shortened or source[: limit - 1]}…"
+
+
+def start_agent_job(model, messages, title=None):
     job_id = uuid4().hex[:8]
     set_agent_status(
         job_id,
+        title=title or "Agent job",
         active=True,
         state="queued",
         message="Agent job queued.",
@@ -492,7 +510,11 @@ def index():
             add_message(username, text, file_path, original_name)
 
             if ask_ollama:
-                agent_job_id = start_agent_job(ollama_model, build_ollama_history())
+                agent_job_id = start_agent_job(
+                    ollama_model,
+                    build_ollama_history(),
+                    summarize_agent_job_title(text, original_name),
+                )
 
         if request.headers.get("X-Requested-With") == "fetch":
             if ollama_error:

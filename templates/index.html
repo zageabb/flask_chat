@@ -167,6 +167,66 @@
             color: #6a1b9a;
         }
 
+        .message-text {
+            line-height: 1.35;
+        }
+
+        .message-text p {
+            margin: 0 0 8px;
+        }
+
+        .message-text p:last-child,
+        .message-text ul:last-child,
+        .message-text ol:last-child,
+        .message-text table:last-child,
+        .message-text pre:last-child {
+            margin-bottom: 0;
+        }
+
+        .message-text ul,
+        .message-text ol {
+            margin: 0 0 8px 22px;
+            padding: 0;
+        }
+
+        .message-text table {
+            border-collapse: collapse;
+            margin: 8px 0;
+            width: 100%;
+        }
+
+        .message-text th,
+        .message-text td {
+            border: 1px solid #ccc;
+            padding: 6px 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        .message-text th {
+            background: rgba(255, 255, 255, 0.55);
+        }
+
+        .message-text code {
+            background: rgba(255, 255, 255, 0.65);
+            border-radius: 4px;
+            padding: 1px 4px;
+        }
+
+        .message-text pre {
+            background: rgba(255, 255, 255, 0.75);
+            border-radius: 6px;
+            margin: 8px 0;
+            overflow-x: auto;
+            padding: 8px;
+            white-space: pre-wrap;
+        }
+
+        .message-text pre code {
+            background: transparent;
+            padding: 0;
+        }
+
         .timestamp {
             color: #777;
             float: right;
@@ -308,7 +368,7 @@
             >
                 <span class="timestamp">{{ msg.created_at }}</span>
                 <b>{{ msg.user }}</b><br>
-                {{ msg.text }}
+                <div class="message-text">{{ msg.text }}</div>
 
                 {% if msg.trace %}
                     <details class="tool-trace">
@@ -403,6 +463,151 @@
             .join(", ");
     }
 
+    function escapeHtml(value) {
+        return String(value)
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#39;");
+    }
+
+    function renderInlineMarkdown(value) {
+        const codeSpans = [];
+        let html = escapeHtml(value).replace(/`([^`]+)`/g, (_, code) => {
+            codeSpans.push(`<code>${code}</code>`);
+            return `\u0000CODE${codeSpans.length - 1}\u0000`;
+        });
+
+        html = html
+            .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+            .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+
+        return html.replace(/\u0000CODE(\d+)\u0000/g, (_, index) => codeSpans[Number(index)]);
+    }
+
+    function isMarkdownTable(lines, index) {
+        if (index + 1 >= lines.length) return false;
+        return lines[index].includes("|") && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[index + 1]);
+    }
+
+    function tableCells(line) {
+        return line
+            .trim()
+            .replace(/^\|/, "")
+            .replace(/\|$/, "")
+            .split("|")
+            .map(cell => cell.trim());
+    }
+
+    function renderMarkdownTable(lines, startIndex) {
+        const header = tableCells(lines[startIndex]);
+        const rows = [];
+        let index = startIndex + 2;
+        while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+            rows.push(tableCells(lines[index]));
+            index += 1;
+        }
+
+        const head = header.map(cell => `<th>${renderInlineMarkdown(cell)}</th>`).join("");
+        const body = rows
+            .map(row => `<tr>${header.map((_, cellIndex) => `<td>${renderInlineMarkdown(row[cellIndex] || "")}</td>`).join("")}</tr>`)
+            .join("");
+        return {
+            html: `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`,
+            nextIndex: index,
+        };
+    }
+
+    function renderMarkdown(value) {
+        const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+        const blocks = [];
+        let paragraph = [];
+        let listItems = [];
+        let orderedList = false;
+        let codeLines = null;
+
+        function flushParagraph() {
+            if (!paragraph.length) return;
+            blocks.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+            paragraph = [];
+        }
+
+        function flushList() {
+            if (!listItems.length) return;
+            const tag = orderedList ? "ol" : "ul";
+            blocks.push(`<${tag}>${listItems.map(item => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${tag}>`);
+            listItems = [];
+        }
+
+        for (let index = 0; index < lines.length;) {
+            const line = lines[index];
+            const trimmed = line.trim();
+
+            if (codeLines) {
+                if (trimmed.startsWith("```")) {
+                    blocks.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+                    codeLines = null;
+                } else {
+                    codeLines.push(line);
+                }
+                index += 1;
+                continue;
+            }
+
+            if (trimmed.startsWith("```")) {
+                flushParagraph();
+                flushList();
+                codeLines = [];
+                index += 1;
+                continue;
+            }
+
+            if (!trimmed) {
+                flushParagraph();
+                flushList();
+                index += 1;
+                continue;
+            }
+
+            if (isMarkdownTable(lines, index)) {
+                flushParagraph();
+                flushList();
+                const table = renderMarkdownTable(lines, index);
+                blocks.push(table.html);
+                index = table.nextIndex;
+                continue;
+            }
+
+            const bullet = trimmed.match(/^[-*]\s+(.+)$/);
+            const numbered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+            if (bullet || numbered) {
+                flushParagraph();
+                const nextOrdered = Boolean(numbered);
+                if (listItems.length && orderedList !== nextOrdered) flushList();
+                orderedList = nextOrdered;
+                listItems.push((bullet || numbered)[1]);
+                index += 1;
+                continue;
+            }
+
+            flushList();
+            paragraph.push(trimmed);
+            index += 1;
+        }
+
+        if (codeLines) blocks.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+        flushParagraph();
+        flushList();
+        return blocks.join("");
+    }
+
+    function renderMessageText(element) {
+        const rawText = element.dataset.rawText ?? element.textContent;
+        element.dataset.rawText = rawText;
+        element.innerHTML = renderMarkdown(rawText);
+    }
+
     function appendToolTrace(container, traceValue) {
         const details = document.createElement("details");
         details.className = "tool-trace";
@@ -462,7 +667,11 @@
         username.textContent = message.user;
         messageElement.appendChild(username);
         messageElement.appendChild(document.createElement("br"));
-        messageElement.appendChild(document.createTextNode(message.text || ""));
+        const messageText = document.createElement("div");
+        messageText.className = "message-text";
+        messageText.dataset.rawText = message.text || "";
+        renderMessageText(messageText);
+        messageElement.appendChild(messageText);
 
         if (message.trace) {
             appendToolTrace(messageElement, message.trace);
@@ -555,8 +764,14 @@
 
                 const title = document.createElement("div");
                 title.className = "agent-job-title";
-                title.textContent = `Job ${job.id || ""} · ${job.state || "working"}`;
+                title.textContent = `${job.title || "Agent job"} · ${job.state || "working"}`;
                 card.appendChild(title);
+
+                if (job.id) {
+                    const idLine = document.createElement("small");
+                    idLine.textContent = `Job ${job.id}`;
+                    card.appendChild(idLine);
+                }
 
                 const message = document.createElement("div");
                 message.textContent = job.message || "Agent is working…";
@@ -659,6 +874,7 @@
     });
     chatForm.addEventListener("submit", submitChat);
     clearChatButton.addEventListener("click", clearChat);
+    document.querySelectorAll(".message-text").forEach(renderMessageText);
     chatBox.scrollTop = chatBox.scrollHeight;
     window.setInterval(syncMessages, pollIntervalMs);
     window.setInterval(syncAgentStatus, 1000);
