@@ -1,9 +1,12 @@
 import json
 import os
+import re
 import sqlite3
 import threading
+import zipfile
 from datetime import datetime
 from pathlib import Path
+from xml.etree import ElementTree
 from uuid import uuid4
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -18,6 +21,7 @@ from flask import (
     session,
     url_for,
 )
+from werkzeug.utils import secure_filename
 
 from agent import run_agent
 
@@ -33,7 +37,11 @@ DATABASE = os.environ.get("DATABASE_PATH", os.path.join(BASE_DIR, "chat.db"))
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
 OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "120"))
+OLLAMA_NUM_CTX = os.environ.get("OLLAMA_NUM_CTX")
 AGENT_MAX_STEPS = int(os.environ.get("AGENT_MAX_STEPS", "8"))
+AGENT_CONTEXT_MESSAGES = int(os.environ.get("AGENT_CONTEXT_MESSAGES", "100"))
+MAX_UPLOAD_DOCUMENTS = int(os.environ.get("MAX_UPLOAD_DOCUMENTS", "5"))
+DOCUMENT_TEXT_LIMIT = int(os.environ.get("DOCUMENT_TEXT_LIMIT", "20000"))
 AGENT_WORKSPACE = os.environ.get(
     "AGENT_WORKSPACE", os.path.join(BASE_DIR, "agent_workspace")
 )
@@ -156,6 +164,7 @@ def init_db():
                 filename TEXT,
                 role TEXT NOT NULL DEFAULT 'user',
                 trace TEXT,
+                document_text TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -166,6 +175,8 @@ def init_db():
         }
         if "trace" not in columns:
             connection.execute("ALTER TABLE messages ADD COLUMN trace TEXT")
+        if "document_text" not in columns:
+            connection.execute("ALTER TABLE messages ADD COLUMN document_text TEXT")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS chat_state (
@@ -189,13 +200,14 @@ def add_message(
     original_name=None,
     role="user",
     trace=None,
+    document_text=None,
 ):
     connection = get_db()
     try:
         cursor = connection.execute(
             """
-            INSERT INTO messages (user, text, file, filename, role, trace)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (user, text, file, filename, role, trace, document_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user,
@@ -204,6 +216,7 @@ def add_message(
                 original_name,
                 role,
                 json.dumps(trace) if trace else None,
+                document_text,
             ),
         )
         connection.commit()
@@ -302,14 +315,193 @@ def get_available_skills():
     return skills
 
 
+def as_list(value):
+    if not value:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.startswith("["):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return [value]
+        return parsed if isinstance(parsed, list) else [value]
+    return [value]
+
+
+def encode_attachment_values(values):
+    values = [value for value in values if value]
+    if not values:
+        return None
+    return values[0] if len(values) == 1 else json.dumps(values)
+
+
+def message_attachments(message):
+    files = as_list(message.get("file"))
+    filenames = as_list(message.get("filename"))
+    attachments = []
+    for index, file_path in enumerate(files):
+        if not file_path:
+            continue
+        filename = filenames[index] if index < len(filenames) else file_path
+        attachments.append(
+            {
+                "file": file_path,
+                "filename": filename,
+                "upload_url": url_for("uploads", filename=file_path),
+            }
+        )
+    return attachments
+
+
+def prepare_message(message):
+    prepared = dict(message)
+    attachments = message_attachments(prepared)
+    prepared["attachments"] = attachments
+    prepared["upload_url"] = attachments[0]["upload_url"] if attachments else None
+    return prepared
+
+
+def prepare_messages(messages):
+    return [prepare_message(message) for message in messages]
+
+
+def clean_extracted_text(value):
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(line.rstrip() for line in value.splitlines())).strip()
+
+
+def truncate_document_text(value):
+    value = clean_extracted_text(value)
+    if len(value) <= DOCUMENT_TEXT_LIMIT:
+        return value
+    return f"{value[:DOCUMENT_TEXT_LIMIT]}\n...[document text truncated]"
+
+
+def extract_text_file(path):
+    data = Path(path).read_bytes()[: DOCUMENT_TEXT_LIMIT * 2]
+    for encoding in ("utf-8", "utf-16", "latin-1"):
+        try:
+            return truncate_document_text(data.decode(encoding))
+        except UnicodeDecodeError:
+            continue
+    return "[Could not decode this text-like file.]"
+
+
+def extract_docx(path):
+    parts = []
+    with zipfile.ZipFile(path) as archive:
+        names = [
+            name
+            for name in archive.namelist()
+            if name.startswith("word/")
+            and name.endswith(".xml")
+            and ("document" in name or "header" in name or "footer" in name)
+        ]
+        for name in names:
+            root = ElementTree.fromstring(archive.read(name))
+            texts = [
+                element.text
+                for element in root.iter()
+                if element.tag.endswith("}t") and element.text
+            ]
+            if texts:
+                parts.append(" ".join(texts))
+    return truncate_document_text("\n\n".join(parts))
+
+
+def extract_xlsx(path):
+    rows = []
+    shared_strings = []
+    with zipfile.ZipFile(path) as archive:
+        if "xl/sharedStrings.xml" in archive.namelist():
+            root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+            for item in root.iter():
+                if item.tag.endswith("}si"):
+                    shared_strings.append(
+                        " ".join(
+                            text.text or ""
+                            for text in item.iter()
+                            if text.tag.endswith("}t")
+                        ).strip()
+                    )
+
+        sheet_names = [
+            name
+            for name in archive.namelist()
+            if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")
+        ]
+        for sheet_name in sheet_names[:10]:
+            root = ElementTree.fromstring(archive.read(sheet_name))
+            rows.append(f"Sheet: {Path(sheet_name).stem}")
+            for row in root.iter():
+                if not row.tag.endswith("}row"):
+                    continue
+                cells = []
+                for cell in row:
+                    if not cell.tag.endswith("}c"):
+                        continue
+                    cell_type = cell.attrib.get("t")
+                    value = next(
+                        (child.text for child in cell if child.tag.endswith("}v")),
+                        "",
+                    )
+                    if cell_type == "s" and value.isdigit():
+                        value = shared_strings[int(value)] if int(value) < len(shared_strings) else value
+                    if value:
+                        cells.append(value)
+                if cells:
+                    rows.append(" | ".join(cells))
+    return truncate_document_text("\n".join(rows))
+
+
+def extract_pdf(path):
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return "[PDF text extraction requires the optional pypdf package.]"
+
+    reader = PdfReader(path)
+    pages = []
+    for index, page in enumerate(reader.pages[:50], start=1):
+        pages.append(f"Page {index}\n{page.extract_text() or ''}")
+    return truncate_document_text("\n\n".join(pages))
+
+
+def extract_document_text(path, original_name):
+    extension = Path(original_name or path).suffix.lower()
+    try:
+        if extension == ".pdf":
+            return extract_pdf(path)
+        if extension == ".docx":
+            return extract_docx(path)
+        if extension == ".xlsx":
+            return extract_xlsx(path)
+        return extract_text_file(path)
+    except (OSError, zipfile.BadZipFile, ElementTree.ParseError, RuntimeError) as error:
+        return f"[Could not extract text from {original_name}: {error}]"
+
+
+def build_document_context(document_texts):
+    sections = []
+    for filename, text in document_texts:
+        if text:
+            sections.append(f"## Attached document: {filename}\n{text}")
+    if not sections:
+        return None
+    return "Attached document text for analysis:\n\n" + "\n\n".join(sections)
+
+
 def build_ollama_history():
     history = []
 
-    for message in get_messages(limit=50):
+    for message in get_messages(limit=AGENT_CONTEXT_MESSAGES):
         text = (message["text"] or "").strip()
-        if message["filename"]:
-            attachment = f"[Attached file: {message['filename']}]"
+        filenames = as_list(message.get("filename"))
+        if filenames:
+            attachment = "[Attached files: " + ", ".join(filenames) + "]"
             text = f"{text}\n{attachment}".strip()
+        if message.get("document_text"):
+            text = f"{text}\n\n{message['document_text']}".strip()
         if not text:
             continue
 
@@ -327,11 +519,16 @@ def build_ollama_history():
 
 
 def ollama_chat(model, messages, tools=None):
+    options = {}
+    if OLLAMA_NUM_CTX:
+        options["num_ctx"] = int(OLLAMA_NUM_CTX)
+
     payload = json.dumps(
         {
             "model": model,
             "messages": messages,
             "stream": False,
+            **({"options": options} if options else {}),
             **({"tools": tools} if tools else {}),
         }
     ).encode("utf-8")
@@ -491,29 +688,49 @@ def index():
 
         username = session.get("username", "Anon")
         text = request.form.get("message", "").strip()
-        file = request.files.get("file")
+        uploaded_files = [
+            file
+            for file in request.files.getlist("files") + request.files.getlist("file")
+            if file and file.filename
+        ]
         ask_ollama = request.form.get("ask_ollama") == "on"
         ollama_model = request.form.get("ollama_model", OLLAMA_MODEL).strip() or OLLAMA_MODEL
         session["ollama_model"] = ollama_model
 
-        file_path = None
-        original_name = None
+        file_paths = []
+        original_names = []
+        document_texts = []
 
-        if file and file.filename:
-            filename = f"{datetime.now().timestamp()}_{file.filename}"
-            path = os.path.join(UPLOAD_FOLDER, filename)
-            file.save(path)
-            file_path = filename
-            original_name = file.filename
+        if len(uploaded_files) > MAX_UPLOAD_DOCUMENTS:
+            ollama_error = f"Please attach no more than {MAX_UPLOAD_DOCUMENTS} documents at once."
 
-        if text or file_path:
-            add_message(username, text, file_path, original_name)
+        if not ollama_error:
+            for file in uploaded_files[:MAX_UPLOAD_DOCUMENTS]:
+                original_name = file.filename
+                filename = f"{datetime.now().timestamp()}_{secure_filename(original_name)}"
+                path = os.path.join(UPLOAD_FOLDER, filename)
+                file.save(path)
+                file_paths.append(filename)
+                original_names.append(original_name)
+                document_texts.append((original_name, extract_document_text(path, original_name)))
+
+        if not ollama_error and (text or file_paths):
+            add_message(
+                username,
+                text,
+                encode_attachment_values(file_paths),
+                encode_attachment_values(original_names),
+                document_text=build_document_context(document_texts),
+            )
 
             if ask_ollama:
                 agent_job_id = start_agent_job(
                     ollama_model,
                     build_ollama_history(),
-                    summarize_agent_job_title(text, original_name),
+                    summarize_agent_job_title(
+                        text,
+                        original_names[0] if original_names else None,
+                    ),
                 )
 
         if request.headers.get("X-Requested-With") == "fetch":
@@ -527,7 +744,7 @@ def index():
     chat_state = get_chat_state()
     return render_template(
         "index.html",
-        messages=get_messages(),
+        messages=prepare_messages(get_messages()),
         skills=get_available_skills(),
         clear_version=chat_state["clear_version"],
         username=session.get("username", ""),
@@ -541,6 +758,11 @@ def uploads(filename):
     return send_from_directory(UPLOAD_FOLDER, filename)
 
 
+@app.route("/agent_outputs/<path:filename>")
+def agent_outputs(filename):
+    return send_from_directory(os.path.join(AGENT_WORKSPACE, "outputs"), filename)
+
+
 @app.route("/api/messages")
 def messages_api():
     try:
@@ -549,10 +771,7 @@ def messages_api():
         return jsonify({"error": "after_id must be an integer"}), 400
 
     messages = get_messages_after(after_id)
-    for message in messages:
-        message["upload_url"] = (
-            url_for("uploads", filename=message["file"]) if message["file"] else None
-        )
+    messages = prepare_messages(messages)
     return jsonify({"messages": messages, **get_chat_state()})
 
 
@@ -564,6 +783,19 @@ def skills_api():
 @app.route("/api/agent/status")
 def agent_status_api():
     return jsonify(get_agent_status())
+
+
+@app.route("/api/shutdown", methods=["POST"])
+def shutdown_api():
+    if app.config.get("TESTING"):
+        return jsonify({"shutting_down": True})
+
+    shutdown = request.environ.get("werkzeug.server.shutdown")
+    if shutdown:
+        shutdown()
+    else:
+        threading.Timer(0.25, lambda: os._exit(0)).start()
+    return jsonify({"shutting_down": True})
 
 
 @app.route("/api/messages/clear", methods=["POST"])

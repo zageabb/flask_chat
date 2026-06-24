@@ -37,6 +37,33 @@ class AgentToolsTestCase(unittest.TestCase):
             agent.run_command(self.workspace, "python3 -c print(1)"),
         )
 
+    def test_document_creation_tools_write_outputs(self):
+        markdown_result = agent.create_markdown(
+            self.workspace, "summary", "# Summary\n\nHello"
+        )
+        csv_result = agent.create_csv(
+            self.workspace,
+            "companies",
+            [{"Company": "Hitachi Energy", "Sector": "Energy"}],
+        )
+        docx_result = agent.create_docx(
+            self.workspace, "brief", "Brief", "# Heading\nA paragraph"
+        )
+        xlsx_result = agent.create_xlsx(
+            self.workspace,
+            "table",
+            [{"Company": "Hitachi Energy", "Sector": "Energy"}],
+        )
+
+        self.assertIn("outputs/summary.md", markdown_result)
+        self.assertIn("outputs/companies.csv", csv_result)
+        self.assertIn("outputs/brief.docx", docx_result)
+        self.assertIn("outputs/table.xlsx", xlsx_result)
+        self.assertTrue((Path(self.workspace) / "outputs" / "summary.md").exists())
+        self.assertTrue((Path(self.workspace) / "outputs" / "companies.csv").exists())
+        self.assertTrue((Path(self.workspace) / "outputs" / "brief.docx").exists())
+        self.assertTrue((Path(self.workspace) / "outputs" / "table.xlsx").exists())
+
     def test_search_result_parser_extracts_links(self):
         parser = agent.SearchResultParser()
         parser.feed(

@@ -345,6 +345,7 @@
     <div class="chat-toolbar">
         <button type="button" class="secondary-button" id="toggle-skills">Available skills</button>
         <button type="button" class="danger-button" id="clear-chat">Clear chat</button>
+        <button type="button" class="danger-button" id="shutdown-app">Shutdown</button>
     </div>
 
     <section class="skills-panel" id="skills-panel" hidden>
@@ -377,21 +378,23 @@
                     </details>
                 {% endif %}
 
-                {% if msg.file %}
-                    <div class="file-box">
-                        <span class="file-icon">
-                            {% if msg.filename.endswith('.pdf') %}📄
-                            {% elif msg.filename.endswith('.xlsx') %}📊
-                            {% elif msg.filename.endswith('.docx') %}📝
-                            {% elif msg.filename.endswith('.jpg') or msg.filename.endswith('.png') %}🖼️
-                            {% else %}📁
-                            {% endif %}
-                        </span>
+                {% if msg.attachments %}
+                    {% for attachment in msg.attachments %}
+                        <div class="file-box">
+                            <span class="file-icon">
+                                {% if attachment.filename.endswith('.pdf') %}📄
+                                {% elif attachment.filename.endswith('.xlsx') %}📊
+                                {% elif attachment.filename.endswith('.docx') %}📝
+                                {% elif attachment.filename.endswith('.jpg') or attachment.filename.endswith('.png') %}🖼️
+                                {% else %}📁
+                                {% endif %}
+                            </span>
 
-                        <a href="{{ url_for('uploads', filename=msg.file) }}" target="_blank">
-                            {{ msg.filename }}
-                        </a>
-                    </div>
+                            <a href="{{ attachment.upload_url }}" target="_blank">
+                                {{ attachment.filename }}
+                            </a>
+                        </div>
+                    {% endfor %}
                 {% endif %}
             </div>
         {% endfor %}
@@ -400,7 +403,7 @@
     <form method="post" enctype="multipart/form-data" id="chat-form">
         <input type="text" name="username" placeholder="Your name" value="{{ username }}" required>
         <input type="text" name="message" placeholder="Message">
-        <input type="file" name="file">
+        <input type="file" name="files" multiple>
         <div class="ollama-options">
             <label>
                 <input type="checkbox" name="ask_ollama">
@@ -433,6 +436,7 @@
     const skillsPanel = document.querySelector("#skills-panel");
     const toggleSkillsButton = document.querySelector("#toggle-skills");
     const clearChatButton = document.querySelector("#clear-chat");
+    const shutdownButton = document.querySelector("#shutdown-app");
     const pollIntervalMs = 2000;
     let pollInProgress = false;
     let clearVersion = {{ clear_version | tojson }};
@@ -677,20 +681,23 @@
             appendToolTrace(messageElement, message.trace);
         }
 
-        if (message.file && message.upload_url) {
+        const attachments = Array.isArray(message.attachments)
+            ? message.attachments
+            : (message.file && message.upload_url ? [message] : []);
+        attachments.forEach(attachment => {
             const fileBox = document.createElement("div");
             fileBox.className = "file-box";
             const icon = document.createElement("span");
             icon.className = "file-icon";
-            icon.textContent = fileIcon(message.filename || "");
+            icon.textContent = fileIcon(attachment.filename || "");
             const link = document.createElement("a");
-            link.href = message.upload_url;
+            link.href = attachment.upload_url;
             link.target = "_blank";
             link.rel = "noopener";
-            link.textContent = message.filename || "Attachment";
+            link.textContent = attachment.filename || "Attachment";
             fileBox.append(icon, link);
             messageElement.appendChild(fileBox);
-        }
+        });
 
         chatBox.appendChild(messageElement);
         lastMessageId = Math.max(lastMessageId, Number(message.id));
@@ -830,7 +837,7 @@
                 throw new Error(payload.error || `HTTP ${response.status}`);
             }
             chatForm.elements.message.value = "";
-            chatForm.elements.file.value = "";
+            chatForm.elements.files.value = "";
             await syncMessages();
             await syncAgentStatus();
             syncStatus.textContent = "Sent";
@@ -868,12 +875,32 @@
         }
     }
 
+    async function shutdownApp() {
+        if (!window.confirm("Shutdown the Flask Chat server?")) return;
+        shutdownButton.disabled = true;
+
+        try {
+            const response = await fetch("/api/shutdown", {
+                method: "POST",
+                headers: { "Accept": "application/json" }
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            syncStatus.textContent = "Server shutting down…";
+            syncStatus.classList.remove("offline");
+        } catch (error) {
+            syncStatus.textContent = "Could not shut down server";
+            syncStatus.classList.add("offline");
+            shutdownButton.disabled = false;
+        }
+    }
+
     toggleSkillsButton.addEventListener("click", () => {
         skillsPanel.hidden = !skillsPanel.hidden;
         toggleSkillsButton.textContent = skillsPanel.hidden ? "Available skills" : "Hide skills";
     });
     chatForm.addEventListener("submit", submitChat);
     clearChatButton.addEventListener("click", clearChat);
+    shutdownButton.addEventListener("click", shutdownApp);
     document.querySelectorAll(".message-text").forEach(renderMessageText);
     chatBox.scrollTop = chatBox.scrollHeight;
     window.setInterval(syncMessages, pollIntervalMs);

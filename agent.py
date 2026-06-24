@@ -1,9 +1,11 @@
+import csv
 import html
 import json
 import os
 import re
 import shlex
 import subprocess
+from io import StringIO
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -13,6 +15,7 @@ from urllib.request import Request, urlopen
 
 MAX_FILE_BYTES = 200_000
 MAX_TOOL_OUTPUT = 12_000
+OUTPUTS_DIR = "outputs"
 SEARXNG_URL = os.environ.get(
     "SEARXNG_URL", "http://192.168.1.249:8081"
 ).rstrip("/")
@@ -124,6 +127,105 @@ def write_file(workspace, path, content):
         return f"Refused: content exceeds {MAX_FILE_BYTES} bytes."
     target.write_text(content, encoding="utf-8")
     return f"Wrote {len(encoded)} bytes to {target.relative_to(Path(workspace).resolve())}"
+
+
+def output_path(workspace, filename, extension):
+    safe_name = Path(filename).name or f"document{extension}"
+    if not safe_name.lower().endswith(extension):
+        safe_name = f"{safe_name}{extension}"
+    return safe_path(workspace, f"{OUTPUTS_DIR}/{safe_name}")
+
+
+def create_markdown(workspace, filename, content):
+    target = output_path(workspace, filename, ".md")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    encoded = content.encode("utf-8")
+    if len(encoded) > MAX_FILE_BYTES:
+        return f"Refused: content exceeds {MAX_FILE_BYTES} bytes."
+    target.write_text(content, encoding="utf-8")
+    relative = target.relative_to(Path(workspace).resolve())
+    return f"Created Markdown document: {relative}\nDownload: /agent_outputs/{target.name}"
+
+
+def create_csv(workspace, filename, rows):
+    target = output_path(workspace, filename, ".csv")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    headers, values = normalize_table_rows(rows)
+    with target.open("w", encoding="utf-8", newline="") as output:
+        writer = csv.writer(output)
+        if headers:
+            writer.writerow(headers)
+        writer.writerows(values)
+    relative = target.relative_to(Path(workspace).resolve())
+    return f"Created CSV document: {relative}\nDownload: /agent_outputs/{target.name}"
+
+
+def create_docx(workspace, filename, title, content):
+    try:
+        from docx import Document
+    except ImportError:
+        return "Cannot create DOCX: python-docx is not installed."
+
+    target = output_path(workspace, filename, ".docx")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    document = Document()
+    if title:
+        document.add_heading(str(title), level=1)
+
+    for block in str(content or "").splitlines():
+        stripped = block.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("# "):
+            document.add_heading(stripped[2:].strip(), level=1)
+        elif stripped.startswith("## "):
+            document.add_heading(stripped[3:].strip(), level=2)
+        elif stripped.startswith(("- ", "* ")):
+            document.add_paragraph(stripped[2:].strip(), style="List Bullet")
+        else:
+            document.add_paragraph(stripped)
+
+    document.save(target)
+    relative = target.relative_to(Path(workspace).resolve())
+    return f"Created Word document: {relative}\nDownload: /agent_outputs/{target.name}"
+
+
+def normalize_table_rows(rows):
+    if not isinstance(rows, list):
+        return [], []
+    if not rows:
+        return [], []
+    if all(isinstance(row, dict) for row in rows):
+        headers = []
+        for row in rows:
+            for key in row:
+                if key not in headers:
+                    headers.append(key)
+        values = [[row.get(header, "") for header in headers] for row in rows]
+        return headers, values
+    values = [row if isinstance(row, list) else [row] for row in rows]
+    return [], values
+
+
+def create_xlsx(workspace, filename, rows, sheet_name="Sheet1"):
+    try:
+        from openpyxl import Workbook
+    except ImportError:
+        return "Cannot create XLSX: openpyxl is not installed."
+
+    target = output_path(workspace, filename, ".xlsx")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = str(sheet_name or "Sheet1")[:31]
+    headers, values = normalize_table_rows(rows)
+    if headers:
+        worksheet.append(headers)
+    for row in values:
+        worksheet.append(row)
+    workbook.save(target)
+    relative = target.relative_to(Path(workspace).resolve())
+    return f"Created Excel workbook: {relative}\nDownload: /agent_outputs/{target.name}"
 
 
 def run_command(workspace, command):
@@ -306,6 +408,74 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "create_markdown",
+            "description": "Create a Markdown document under outputs/ in the agent workspace.",
+            "parameters": {
+                "type": "object",
+                "required": ["filename", "content"],
+                "properties": {
+                    "filename": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_docx",
+            "description": "Create a Word .docx document under outputs/ in the agent workspace.",
+            "parameters": {
+                "type": "object",
+                "required": ["filename", "content"],
+                "properties": {
+                    "filename": {"type": "string"},
+                    "title": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_xlsx",
+            "description": "Create an Excel .xlsx workbook under outputs/ in the agent workspace from rows.",
+            "parameters": {
+                "type": "object",
+                "required": ["filename", "rows"],
+                "properties": {
+                    "filename": {"type": "string"},
+                    "sheet_name": {"type": "string", "default": "Sheet1"},
+                    "rows": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_csv",
+            "description": "Create a CSV file under outputs/ in the agent workspace from rows.",
+            "parameters": {
+                "type": "object",
+                "required": ["filename", "rows"],
+                "properties": {
+                    "filename": {"type": "string"},
+                    "rows": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "web_search",
             "description": "Search the public internet and return result titles and URLs.",
             "parameters": {
@@ -339,6 +509,24 @@ def execute_tool(name, arguments, workspace):
         "read_file": lambda: read_file(workspace, arguments["path"]),
         "write_file": lambda: write_file(workspace, arguments["path"], arguments["content"]),
         "run_command": lambda: run_command(workspace, arguments["command"]),
+        "create_markdown": lambda: create_markdown(
+            workspace, arguments["filename"], arguments["content"]
+        ),
+        "create_docx": lambda: create_docx(
+            workspace,
+            arguments["filename"],
+            arguments.get("title", ""),
+            arguments["content"],
+        ),
+        "create_xlsx": lambda: create_xlsx(
+            workspace,
+            arguments["filename"],
+            arguments["rows"],
+            arguments.get("sheet_name", "Sheet1"),
+        ),
+        "create_csv": lambda: create_csv(
+            workspace, arguments["filename"], arguments["rows"]
+        ),
         "web_search": lambda: web_search(
             arguments["query"], arguments.get("max_results", 5)
         ),
@@ -554,6 +742,14 @@ def describe_tool_start(name, arguments):
         return f"Reading file: {arguments.get('path', '')}"
     if name == "write_file":
         return f"Writing file: {arguments.get('path', '')}"
+    if name == "create_markdown":
+        return f"Creating Markdown document: {arguments.get('filename', '')}"
+    if name == "create_docx":
+        return f"Creating Word document: {arguments.get('filename', '')}"
+    if name == "create_xlsx":
+        return f"Creating Excel workbook: {arguments.get('filename', '')}"
+    if name == "create_csv":
+        return f"Creating CSV document: {arguments.get('filename', '')}"
     if name == "list_files":
         return f"Listing files: {arguments.get('path', '.')}"
     return f"Running tool: {name}"

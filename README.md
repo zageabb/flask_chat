@@ -39,7 +39,10 @@ shown underneath for troubleshooting.
 The toolbar shows the currently loaded Markdown skills and can clear the shared
 chat history. Clearing chat does not delete uploads or files in `agent_workspace/`.
 Chat messages render a safe Markdown subset, including tables, lists, inline
-code, and fenced code blocks.
+code, and fenced code blocks. Up to five files can be attached to a message for
+agent analysis. Text-like files, PDFs, DOCX, and XLSX files are extracted into
+the agent context while the original files remain available as chat attachments.
+Use the **Shutdown** button to stop the Flask development server from the UI.
 
 Use a model that supports tool calling, such as a current Qwen model. Models that
 do not support Ollama tool calls may still answer directly, but will not be able
@@ -50,6 +53,8 @@ to use the agent tools reliably.
 The agent can:
 
 - list, read, and write files under `agent_workspace/`;
+- create Markdown, Word DOCX, Excel XLSX, and CSV documents under
+  `agent_workspace/outputs/`;
 - run guarded, non-interactive commands from that workspace;
 - search the public web and fetch readable page text;
 - make several tool decisions before returning its final answer.
@@ -60,6 +65,8 @@ Additional skill playbooks live under `skills/`; every Markdown file in that
 directory is loaded into the system instructions. Tool activity is visible under
 each agent response, and the live status banner shows recent orchestration
 feedback for multiple concurrent jobs while work is in progress.
+Generated documents can be downloaded from `/agent_outputs/<filename>` when the
+agent returns a download link.
 
 This is bounded autonomy, not a hardened OS sandbox. Shell syntax, destructive
 commands, installers, Git, and common network commands are blocked, and execution
@@ -76,7 +83,14 @@ container or VM with no secrets and only the intended workspace mounted.
 - `OLLAMA_URL`: Ollama server URL. Defaults to `http://localhost:11434`.
 - `OLLAMA_MODEL`: default model name. Defaults to `llama3.2`.
 - `OLLAMA_TIMEOUT`: request timeout in seconds. Defaults to `120`.
+- `OLLAMA_NUM_CTX`: optional Ollama context-window size. Defaults to `8192` in
+  `start.sh`; raise it only if the selected model supports a larger context.
 - `AGENT_MAX_STEPS`: maximum model/tool loop iterations. Defaults to `8`.
+- `AGENT_CONTEXT_MESSAGES`: number of recent chat messages sent to the agent.
+  Defaults to `100`.
+- `MAX_UPLOAD_DOCUMENTS`: maximum files accepted per message. Defaults to `5`.
+- `DOCUMENT_TEXT_LIMIT`: maximum extracted characters per document. Defaults to
+  `20000`.
 - `AGENT_WORKSPACE`: directory available to file and command tools.
 - `ORCHESTRATOR_INSTRUCTIONS_FILE`: path to the orchestration decision policy.
 - `BASE_INSTRUCTIONS_FILE`: path to the main safety/tool instruction file.
