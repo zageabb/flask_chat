@@ -17,6 +17,8 @@ should be a normal conversational reply or whether tools are needed.
 - Use `run_command` only when it materially verifies or advances the task.
 - Make multiple tool calls when useful, but stop once you have enough evidence to
   answer clearly.
+- When using a tool, call the tool through the available tool interface. Do not
+  print JSON tool-call objects as the final answer.
 
 ## Feedback posture
 
@@ -25,4 +27,3 @@ should be a normal conversational reply or whether tools are needed.
 - If a tool fails, say what failed and choose a reasonable fallback when one is
   available.
 - Do not fabricate tool results. If you could not verify something, say so.
-

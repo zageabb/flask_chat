@@ -223,3 +223,51 @@ class AgentToolsTestCase(unittest.TestCase):
 
         self.assertEqual(answer, "Done.")
         self.assertEqual((Path(self.workspace) / "note.txt").read_text(), "hello")
+
+    def test_json_content_tool_call_is_executed(self):
+        orchestrator = Path(self.workspace) / "orchestrator.md"
+        instructions = Path(self.workspace) / "instructions.md"
+        skills = Path(self.workspace) / "skills"
+        orchestrator.write_text("Decide when tools are needed.", encoding="utf-8")
+        instructions.write_text("Be useful.", encoding="utf-8")
+        skills.mkdir()
+        (Path(self.workspace) / "helium_info.txt").write_text(
+            "Helium is a noble gas.", encoding="utf-8"
+        )
+        responses = iter(
+            [
+                {
+                    "role": "assistant",
+                    "content": json.dumps(
+                        {
+                            "name": "read_file",
+                            "parameters": {"path": "helium_info.txt"},
+                        }
+                    ),
+                },
+                {"role": "assistant", "content": "Helium is a noble gas."},
+            ]
+        )
+
+        answer, trace = agent.run_agent(
+            "test",
+            [{"role": "user", "content": "What is helium?"}],
+            lambda model, messages, tools: next(responses),
+            self.workspace,
+            instructions,
+            orchestrator,
+            skills,
+        )
+
+        self.assertEqual(answer, "Helium is a noble gas.")
+        self.assertEqual(trace[0]["tool"], "read_file")
+
+    def test_tool_arguments_content_shape_is_supported(self):
+        tool_calls = agent.tool_calls_from_content(
+            '{"tool":"web_search","arguments":{"query":"Hitachi Energy"}}'
+        )
+
+        self.assertEqual(tool_calls[0]["function"]["name"], "web_search")
+        self.assertEqual(
+            tool_calls[0]["function"]["arguments"]["query"], "Hitachi Energy"
+        )

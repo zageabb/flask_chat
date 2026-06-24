@@ -354,6 +354,52 @@ def execute_tool(name, arguments, workspace):
         return f"Network tool failed: {error}"
 
 
+def tool_calls_from_content(content):
+    content = (content or "").strip()
+    if not content:
+        return []
+
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return []
+
+    candidates = payload if isinstance(payload, list) else [payload]
+    tool_calls = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+
+        name = (
+            candidate.get("name")
+            or candidate.get("tool")
+            or candidate.get("tool_name")
+            or candidate.get("function")
+        )
+        arguments = (
+            candidate.get("arguments")
+            or candidate.get("parameters")
+            or candidate.get("args")
+            or {}
+        )
+
+        if isinstance(name, dict):
+            arguments = name.get("arguments") or arguments
+            name = name.get("name")
+        if not isinstance(name, str):
+            continue
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+
+        tool_calls.append({"function": {"name": name, "arguments": arguments}})
+    return tool_calls
+
+
 def load_agent_instructions(
     base_instructions_file,
     orchestrator_instructions_file,
@@ -415,7 +461,9 @@ def run_agent(
             )
         response_message = ollama_chat(model, agent_messages, TOOL_SCHEMAS)
         agent_messages.append(response_message)
-        tool_calls = response_message.get("tool_calls") or []
+        tool_calls = response_message.get("tool_calls") or tool_calls_from_content(
+            response_message.get("content")
+        )
         if not tool_calls:
             content = (response_message.get("content") or "").strip()
             if status_callback:
