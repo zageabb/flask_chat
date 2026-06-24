@@ -101,6 +101,7 @@ class ChatAppTestCase(unittest.TestCase):
         self.assertTrue(payload["active"])
         self.assertEqual(payload["tool"], "web_search")
         self.assertEqual(payload["arguments"]["query"], "ollama")
+        self.assertEqual(payload["events"][-1]["message"], "Searching the web.")
 
     @patch("app.call_agent", return_value=("Hello Alice", []))
     def test_ollama_reply_uses_orchestrator(self, call_agent):

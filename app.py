@@ -22,10 +22,12 @@ from agent import run_agent
 
 
 app = Flask(__name__)
-app.secret_key = "supersecretkey"  # required for sessions
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "static", "uploads")
+SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-change-me")
+FLASK_HOST = os.environ.get("FLASK_HOST", "0.0.0.0")
+FLASK_PORT = int(os.environ.get("FLASK_PORT", "5000"))
 DATABASE = os.environ.get("DATABASE_PATH", os.path.join(BASE_DIR, "chat.db"))
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
@@ -37,7 +39,13 @@ AGENT_WORKSPACE = os.environ.get(
 BASE_INSTRUCTIONS_FILE = os.environ.get(
     "BASE_INSTRUCTIONS_FILE", os.path.join(BASE_DIR, "base_instructions.md")
 )
+ORCHESTRATOR_INSTRUCTIONS_FILE = os.environ.get(
+    "ORCHESTRATOR_INSTRUCTIONS_FILE",
+    os.path.join(BASE_DIR, "orchestrator_instructions.md"),
+)
 SKILLS_DIR = os.environ.get("SKILLS_DIR", os.path.join(BASE_DIR, "skills"))
+
+app.secret_key = SECRET_KEY  # required for sessions
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(AGENT_WORKSPACE, exist_ok=True)
@@ -50,15 +58,28 @@ AGENT_STATUS = {
     "step": None,
     "tool": None,
     "arguments": {},
+    "events": [],
     "updated_at": None,
 }
 
 
 def set_agent_status(**updates):
     with AGENT_STATUS_LOCK:
+        reset_events = updates.pop("reset_events", False)
+        message = updates.get("message")
+        events = [] if reset_events else list(AGENT_STATUS.get("events", []))
+        if message:
+            events.append(
+                {
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "message": message,
+                }
+            )
+        events = events[-8:]
         AGENT_STATUS.update(
             {
                 "updated_at": datetime.now().isoformat(timespec="seconds"),
+                "events": events,
                 **updates,
             }
         )
@@ -299,6 +320,7 @@ def call_agent(model):
         step=None,
         tool=None,
         arguments={},
+        reset_events=True,
     )
 
     def update_status(event):
@@ -311,6 +333,7 @@ def call_agent(model):
             ollama_chat=ollama_chat,
             workspace=AGENT_WORKSPACE,
             base_instructions_file=BASE_INSTRUCTIONS_FILE,
+            orchestrator_instructions_file=ORCHESTRATOR_INSTRUCTIONS_FILE,
             skills_dir=SKILLS_DIR,
             max_steps=AGENT_MAX_STEPS,
             status_callback=update_status,
@@ -445,4 +468,4 @@ init_db()
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host=FLASK_HOST, port=FLASK_PORT, debug=True)

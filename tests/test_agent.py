@@ -91,8 +91,10 @@ class AgentToolsTestCase(unittest.TestCase):
         self.assertEqual(results[0]["source"], "duckduckgo-fallback")
 
     def test_agent_loop_executes_tool_and_returns_final_answer(self):
+        orchestrator = Path(self.workspace) / "orchestrator.md"
         instructions = Path(self.workspace) / "instructions.md"
         skills = Path(self.workspace) / "skills"
+        orchestrator.write_text("Decide when tools are needed.", encoding="utf-8")
         instructions.write_text("Be useful.", encoding="utf-8")
         skills.mkdir()
         (skills / "coding.md").write_text("Write code.", encoding="utf-8")
@@ -126,6 +128,7 @@ class AgentToolsTestCase(unittest.TestCase):
             ollama_chat=fake_chat,
             workspace=self.workspace,
             base_instructions_file=instructions,
+            orchestrator_instructions_file=orchestrator,
             skills_dir=skills,
         )
 
@@ -135,8 +138,10 @@ class AgentToolsTestCase(unittest.TestCase):
         self.assertTrue((Path(self.workspace) / "hello.py").exists())
 
     def test_agent_loop_reports_live_tool_status(self):
+        orchestrator = Path(self.workspace) / "orchestrator.md"
         instructions = Path(self.workspace) / "instructions.md"
         skills = Path(self.workspace) / "skills"
+        orchestrator.write_text("Decide when tools are needed.", encoding="utf-8")
         instructions.write_text("Be useful.", encoding="utf-8")
         skills.mkdir()
         statuses = []
@@ -167,11 +172,13 @@ class AgentToolsTestCase(unittest.TestCase):
                 lambda model, messages, tools: next(responses),
                 self.workspace,
                 instructions,
+                orchestrator,
                 skills,
                 status_callback=statuses.append,
             )
 
         self.assertEqual(answer, "Found it.")
+        self.assertIn("deciding", statuses[0]["message"])
         self.assertIn("Searching the web", statuses[1]["message"])
         self.assertEqual(statuses[1]["tool"], "web_search")
         self.assertEqual(
@@ -197,8 +204,10 @@ class AgentToolsTestCase(unittest.TestCase):
                 {"role": "assistant", "content": "Done."},
             ]
         )
+        orchestrator = Path(self.workspace) / "orchestrator.md"
         instructions = Path(self.workspace) / "instructions.md"
         skills = Path(self.workspace) / "skills"
+        orchestrator.write_text("Decide when tools are needed.", encoding="utf-8")
         instructions.write_text("Be useful.", encoding="utf-8")
         skills.mkdir()
 
@@ -208,6 +217,7 @@ class AgentToolsTestCase(unittest.TestCase):
             lambda model, messages, tools: next(responses),
             self.workspace,
             instructions,
+            orchestrator,
             skills,
         )
 

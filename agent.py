@@ -354,7 +354,13 @@ def execute_tool(name, arguments, workspace):
         return f"Network tool failed: {error}"
 
 
-def load_agent_instructions(base_instructions_file, skills_dir, workspace):
+def load_agent_instructions(
+    base_instructions_file,
+    orchestrator_instructions_file,
+    skills_dir,
+    workspace,
+):
+    orchestrator = Path(orchestrator_instructions_file).read_text(encoding="utf-8")
     base = Path(base_instructions_file).read_text(encoding="utf-8")
     skill_sections = []
     for skill_file in sorted(Path(skills_dir).glob("*.md")):
@@ -362,6 +368,7 @@ def load_agent_instructions(base_instructions_file, skills_dir, workspace):
             f"\n## Skill: {skill_file.stem}\n{skill_file.read_text(encoding='utf-8')}"
         )
     return (
+        f"{orchestrator.strip()}\n\n"
         f"{base.strip()}\n\n"
         f"Your private workspace is {Path(workspace).resolve()}. "
         "All file and command tools are confined there.\n"
@@ -375,6 +382,7 @@ def run_agent(
     ollama_chat,
     workspace,
     base_instructions_file,
+    orchestrator_instructions_file,
     skills_dir,
     max_steps=8,
     status_callback=None,
@@ -383,7 +391,10 @@ def run_agent(
         {
             "role": "system",
             "content": load_agent_instructions(
-                base_instructions_file, skills_dir, workspace
+                base_instructions_file,
+                orchestrator_instructions_file,
+                skills_dir,
+                workspace,
             ),
         },
         *messages,
@@ -396,7 +407,10 @@ def run_agent(
                 {
                     "state": "thinking",
                     "step": step,
-                    "message": f"Agent is thinking about step {step}.",
+                    "message": (
+                        f"Orchestrator is deciding whether step {step} needs "
+                        "a direct answer or tools."
+                    ),
                 }
             )
         response_message = ollama_chat(model, agent_messages, TOOL_SCHEMAS)
