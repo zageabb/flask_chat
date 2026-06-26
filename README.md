@@ -42,6 +42,8 @@ Chat messages render a safe Markdown subset, including tables, lists, inline
 code, and fenced code blocks. Up to five files can be attached to a message for
 agent analysis. Text-like files, PDFs, DOCX, and XLSX files are extracted into
 the agent context while the original files remain available as chat attachments.
+Uploads are also mirrored into `agent_workspace/uploads/`, and the agent context
+includes the exact workspace path it can use with file tools.
 Use the **Shutdown** button to stop the Flask development server from the UI.
 
 Use a model that supports tool calling, such as a current Qwen model. Models that

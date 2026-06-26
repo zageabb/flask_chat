@@ -273,7 +273,18 @@ class ChatAppTestCase(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 302)
+        messages = chat_app.get_messages()
+        stored_files = chat_app.as_list(messages[0]["file"])
+        self.assertEqual(len(stored_files), 2)
+        self.assertTrue(
+            (Path(chat_app.AGENT_WORKSPACE) / "uploads" / stored_files[0]).exists()
+        )
+        self.assertEqual(
+            (Path(chat_app.AGENT_WORKSPACE) / "uploads" / stored_files[0]).read_text(),
+            "alpha notes",
+        )
         agent_messages = call_agent.call_args.args[1]
+        self.assertIn(f"uploads/{stored_files[0]}", agent_messages[0]["content"])
         self.assertIn("alpha notes", agent_messages[-1]["content"])
         self.assertIn("beta notes", agent_messages[-1]["content"])
 
@@ -393,6 +404,7 @@ class ChatAppTestCase(unittest.TestCase):
         self.assertIn("Alice: Earlier request", history[0]["content"])
         self.assertIn("Ollama Agent: Earlier answer", history[0]["content"])
         self.assertIn("Attached files: brief.txt", history[0]["content"])
+        self.assertIn("agent path: uploads/brief.txt", history[0]["content"])
         self.assertIn("Extracted document text is available", history[0]["content"])
         self.assertIn("Important notes", history[-1]["content"])
 

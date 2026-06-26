@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import sqlite3
 import threading
 import zipfile
@@ -58,6 +59,7 @@ app.secret_key = SECRET_KEY  # required for sessions
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(AGENT_WORKSPACE, exist_ok=True)
+os.makedirs(os.path.join(AGENT_WORKSPACE, "uploads"), exist_ok=True)
 
 AGENT_STATUS_LOCK = threading.Lock()
 AGENT_STATUS = {
@@ -336,6 +338,29 @@ def encode_attachment_values(values):
     return values[0] if len(values) == 1 else json.dumps(values)
 
 
+def agent_upload_path(filename):
+    return Path("uploads", filename).as_posix()
+
+
+def mirror_upload_for_agent(source_path, filename):
+    target = Path(AGENT_WORKSPACE) / agent_upload_path(filename)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, target)
+    return target
+
+
+def describe_agent_attachments(message):
+    files = as_list(message.get("file"))
+    filenames = as_list(message.get("filename"))
+    descriptions = []
+    for index, file_path in enumerate(files):
+        if not file_path:
+            continue
+        filename = filenames[index] if index < len(filenames) else file_path
+        descriptions.append(f"{filename} (agent path: {agent_upload_path(file_path)})")
+    return descriptions
+
+
 def message_attachments(message):
     files = as_list(message.get("file"))
     filenames = as_list(message.get("filename"))
@@ -496,9 +521,9 @@ def build_ollama_history():
 
     for message in get_messages(limit=AGENT_CONTEXT_MESSAGES):
         text = (message["text"] or "").strip()
-        filenames = as_list(message.get("filename"))
-        if filenames:
-            attachment = "[Attached files: " + ", ".join(filenames) + "]"
+        attachments = describe_agent_attachments(message)
+        if attachments:
+            attachment = "[Attached files: " + ", ".join(attachments) + "]"
             text = f"{text}\n{attachment}".strip()
         if message.get("document_text"):
             text = f"{text}\n\n{message['document_text']}".strip()
@@ -529,14 +554,14 @@ def format_chat_context_message(messages):
 
     for index, message in enumerate(messages, start=1):
         text = (message["text"] or "").strip()
-        filenames = as_list(message.get("filename"))
+        attachments = describe_agent_attachments(message)
         speaker = "Ollama Agent" if message["role"] == "assistant" else message["user"]
 
         parts = []
         if text:
             parts.append(text)
-        if filenames:
-            parts.append("Attached files: " + ", ".join(filenames))
+        if attachments:
+            parts.append("Attached files: " + ", ".join(attachments))
         if message.get("document_text"):
             parts.append("Extracted document text is available in this chat context.")
         if not parts:
@@ -752,6 +777,7 @@ def index():
                 filename = f"{datetime.now().timestamp()}_{secure_filename(original_name)}"
                 path = os.path.join(UPLOAD_FOLDER, filename)
                 file.save(path)
+                mirror_upload_for_agent(path, filename)
                 file_paths.append(filename)
                 original_names.append(original_name)
                 document_texts.append((original_name, extract_document_text(path, original_name)))
