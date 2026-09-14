@@ -1,5 +1,28 @@
 # Flask Chat
 
+## Ubuntu server deployment
+
+Verified on **14 September 2026** against the listeners, user systemd services,
+Docker port mappings and deployment registry on `192.168.1.249`.
+
+**No active application listener was found for this checkout.**
+Port `5000` is a configured/development port, not a verified live URL.
+
+Checkout: `/home/zageabb/ollama-chat/flask_chat`.
+
+These are **user** systemd units. Inspect them with:
+
+```bash
+systemctl --user status ollama-chat-flask-chat.service
+systemctl --user cat ollama-chat-flask-chat.service
+```
+
+Development defaults and container-internal ports elsewhere in this repository
+may differ from this host deployment. Use the live ports above when accessing
+this Ubuntu server; do not start a second copy on a port already occupied.
+
+[Complete Ubuntu port inventory](https://github.com/zageabb/universal-deployment-agent/blob/main/UBUNTU_PORTS.md).
+
 A small Flask group chat with SQLite message persistence, file attachments, and an
 optional local Ollama participant. Ollama can also operate as a bounded autonomous
 agent with coding, command, file, and web-research tools.
