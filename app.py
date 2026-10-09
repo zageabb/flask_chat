@@ -23,11 +23,14 @@ from flask import (
     url_for,
 )
 from werkzeug.utils import secure_filename
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from agent import run_agent
 
 
 app = Flask(__name__)
+# Trust the single isolated UDA/Caddy forwarding hop only.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1, x_prefix=1)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "static", "uploads")
