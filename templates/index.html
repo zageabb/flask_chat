@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <base href="{{ url_for('index') }}">
     <title>Flask Chat</title>
 
     <style>
@@ -428,6 +429,12 @@
 </body>
 
 <script>
+    const fetchScoped = (path, options) => {
+        const scoped = typeof path === "string" && path.startsWith("/") && !path.startsWith("//")
+            ? new URL(path.slice(1), document.baseURI).toString()
+            : path;
+        return window.fetch(scoped, options);
+    };
     const chatBox = document.querySelector(".chat-box");
     const syncStatus = document.querySelector(".sync-status");
     const agentStatus = document.querySelector("#agent-status");
@@ -709,7 +716,7 @@
         pollInProgress = true;
 
         try {
-            const response = await fetch(`/api/messages?after_id=${lastMessageId}`, {
+            const response = await fetchScoped(`/api/messages?after_id=${lastMessageId}`, {
                 cache: "no-store",
                 headers: { "Accept": "application/json" }
             });
@@ -719,7 +726,7 @@
                 chatBox.replaceChildren();
                 lastMessageId = 0;
                 clearVersion = payload.clear_version;
-                const refreshedResponse = await fetch("/api/messages?after_id=0", {
+                const refreshedResponse = await fetchScoped("/api/messages?after_id=0", {
                     cache: "no-store",
                     headers: { "Accept": "application/json" }
                 });
@@ -742,7 +749,7 @@
 
     async function syncAgentStatus() {
         try {
-            const response = await fetch("/api/agent/status", {
+            const response = await fetchScoped("/api/agent/status", {
                 cache: "no-store",
                 headers: { "Accept": "application/json" }
             });
@@ -824,7 +831,7 @@
         }
 
         try {
-            const response = await fetch("/", {
+            const response = await fetchScoped("/", {
                 method: "POST",
                 body: formData,
                 headers: {
@@ -856,7 +863,7 @@
         clearChatButton.disabled = true;
 
         try {
-            const response = await fetch("/api/messages/clear", {
+            const response = await fetchScoped("/api/messages/clear", {
                 method: "POST",
                 headers: { "Accept": "application/json" }
             });
@@ -880,7 +887,7 @@
         shutdownButton.disabled = true;
 
         try {
-            const response = await fetch("/api/shutdown", {
+            const response = await fetchScoped("/api/shutdown", {
                 method: "POST",
                 headers: { "Accept": "application/json" }
             });
